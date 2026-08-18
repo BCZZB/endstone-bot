@@ -96,8 +96,12 @@ class NBTReader:
             count = self._read_int()
             if count < 0 or count > MAX_LIST_LENGTH:
                 raise ValueError(f"NBT list 长度超限: {count}")
-            if element_type == TAG_END or count == 0:
+            if count == 0:
                 return
+            if element_type == TAG_END:
+                # B12：规范中非空 list 的元素类型不能是 END，
+                # 静默 return 会导致位置指针错乱，防御性报错
+                raise ValueError("NBT list 元素类型为 END 但长度非 0，数据异常")
             self._depth += 1
             if self._depth > MAX_NBT_DEPTH:
                 raise ValueError(f"NBT 递归深度超限: {self._depth}")
@@ -159,8 +163,11 @@ class NBTReader:
             count = self._read_int()
             if count < 0 or count > MAX_LIST_LENGTH:
                 raise ValueError(f"NBT list 长度超限: {count}")
-            if element_type == TAG_END or count == 0:
+            if count == 0:
                 return []
+            if element_type == TAG_END:
+                # B12：同 skip_payload，防御性报错
+                raise ValueError("NBT list 元素类型为 END 但长度非 0，数据异常")
             self._depth += 1
             if self._depth > MAX_NBT_DEPTH:
                 raise ValueError(f"NBT 递归深度超限: {self._depth}")

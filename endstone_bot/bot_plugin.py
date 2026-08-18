@@ -151,6 +151,7 @@ class BotPlugin(Plugin):
         # 行为包状态
         self._behavior_pack_active: bool = False
         self._pending_sim_spawns: list[FakePlayer] = []
+        self._pending_sim_removes: set[str] = set()  # B4：失联期间待补发的移除名单
         self._bridge_token: str = ""  # 行为包鉴权令牌
         self._pong_received: bool = False  # 本轮 ping 是否收到 pong
 
@@ -205,6 +206,11 @@ class BotPlugin(Plugin):
         with self._lock:
             self._save_db()
             for fp in list(self._bots.values()):
+                if fp.type == "simulated":
+                    # B13：服务器关闭时行为包一并停止，SimulatedPlayer 自然消失，
+                    # 无需（也无法）发送移除命令；直接清引用即可
+                    fp.actor = None
+                    continue
                 self._remove_managed_player(fp)
             self._bots.clear()
             self._name_index.clear()
@@ -320,6 +326,10 @@ class BotPlugin(Plugin):
             tickingarea_name=f"bot_{name}",
         )
 
+        # 先注册到索引（B2：保证行为包 scriptevent 响应能立即查到该假人）
+        self._bots[fp.id] = fp
+        self._name_index[fp.name.lower()] = fp.id
+
         # 生成实体（同月华 spawnForType）
         if fp_type == "simulated":
             # 通过行为包生成 SimulatedPlayer
@@ -331,6 +341,9 @@ class BotPlugin(Plugin):
         else:
             actor = self._spawn_legacy_entity(fp, location.dimension)
             if actor is None:
+                # 生成失败：回滚注册
+                self._bots.pop(fp.id, None)
+                self._name_index.pop(fp.name.lower(), None)
                 sender.send_error_message("创建假人失败，请确认当前区块已加载。")
                 return True
             fp.actor = actor
@@ -344,8 +357,6 @@ class BotPlugin(Plugin):
             )
 
         # 持久化
-        self._bots[fp.id] = fp
-        self._name_index[fp.name.lower()] = fp.id
         self._save_db()
         return True
 
@@ -394,6 +405,7 @@ class BotPlugin(Plugin):
 
         self._bots.clear()
         self._name_index.clear()
+        self._db_dirty = False  # B6：防止后续 _persist_positions 回写空库
 
         # 同月华：扫描残留 tickingarea
         residual = self._remove_all_residual_tickingareas()
@@ -459,9 +471,10 @@ class BotPlugin(Plugin):
             fp.location_y = round(float(loc.y), 2)
             fp.location_z = round(float(loc.z), 2)
 
-        # 重新创建 tickingarea
+        # 重新创建 tickingarea（radius=0 表示取消常加载，只移除不创建）
         self._remove_tickingarea(fp)
-        self._create_tickingarea(fp, radius)
+        if radius > 0:
+            self._create_tickingarea(fp, radius)
         self._save_db()
         sender.send_message(f"已把 §b{fp.name}§r 的常加载半径设为 {radius} 区块。")
         return True
@@ -508,11 +521,11 @@ class BotPlugin(Plugin):
         if fp is None:
             sender.send_error_message("假人不存在。")
             return True
-        if fp.type != "entity":
-            sender.send_error_message("新版模拟玩家不支持二次元皮肤。")
-            return True
         if not self._can_manage(sender, fp):
             sender.send_error_message("无权修改该假人。")
+            return True
+        if fp.type != "entity":
+            sender.send_error_message("新版模拟玩家不支持二次元皮肤。")
             return True
         try:
             skin_id = int(args[1])
@@ -1131,10 +1144,17 @@ class BotPlugin(Plugin):
 
     def _apply_behavior(self, fp: FakePlayer, force: bool) -> None:
         """同月华 applyBehavior：执行假人行为。"""
+        behavior = fp.behavior
+
+        # B3：simulated 假人的 actor 在行为包侧（插件无引用），
+        # 行为通过「行为包上报坐标 + scriptevent bot:teleport」实现
+        if fp.type == "simulated":
+            self._apply_simulated_behavior(fp, behavior, force)
+            return
+
         actor = fp.actor
         if not self._is_actor_valid(actor):
             return
-        behavior = fp.behavior
 
         # force=true 时停止所有动作（同月华 stopMoving 等）
         # NPC 没有这些 API，跳过
@@ -1156,6 +1176,80 @@ class BotPlugin(Plugin):
                 self.logger.debug(
                     f"假人 {fp.name} 行为 {behavior.action} 已触发（NPC 能力受限）"
                 )
+
+    def _apply_simulated_behavior(
+        self, fp: FakePlayer, behavior: BotBehavior, force: bool
+    ) -> None:
+        """simulated 假人行为：基于行为包上报坐标 + scriptevent 传送实现。
+
+        - idle：位置守护，被推离存储锚点后传送回锚点
+        - station：锁定站桩点，偏离后传送回站桩点
+        - follow：与目标玩家距离过大时传送到目标身后
+        """
+        if not self._behavior_pack_active:
+            return
+        if not fp.sim_has_position:
+            # 尚未收到行为包首次坐标上报，跳过本次行为计算
+            return
+        if not (force or self._tick_counter % 10 == 0):
+            return
+
+        try:
+            if behavior.movement == "station":
+                sx, sy, sz = behavior.station_x, behavior.station_y, behavior.station_z
+                if sx is None or sy is None or sz is None:
+                    return
+                dx = fp.sim_actual_x - sx
+                dy = fp.sim_actual_y - sy
+                dz = fp.sim_actual_z - sz
+                if dx * dx + dy * dy + dz * dz > STATION_THRESHOLD_SQ:
+                    self._teleport_simulated_player(fp, sx, sy, sz)
+            elif behavior.movement == "follow":
+                target_name = behavior.target_player.strip()
+                if not target_name:
+                    return
+                target = self._find_online_player(target_name)
+                if target is None:
+                    return
+                target_loc = target.location
+                target_dim = self._dimension_id(target_loc.dimension)
+                if target_dim != fp.dimension:
+                    return  # 跨维度不跟随
+                dx = target_loc.x - fp.sim_actual_x
+                dy = target_loc.y - fp.sim_actual_y
+                dz = target_loc.z - fp.sim_actual_z
+                if dx * dx + dy * dy + dz * dz > FOLLOW_TELEPORT_DISTANCE_SQ:
+                    yaw = self._player_yaw(target)
+                    offset_x = -math.sin(yaw) * FOLLOW_OFFSET_DISTANCE
+                    offset_z = math.cos(yaw) * FOLLOW_OFFSET_DISTANCE
+                    self._teleport_simulated_player(
+                        fp,
+                        target_loc.x + offset_x,
+                        target_loc.y,
+                        target_loc.z + offset_z,
+                    )
+            elif behavior.movement == "idle":
+                dx = fp.sim_actual_x - fp.location_x
+                dy = fp.sim_actual_y - fp.location_y
+                dz = fp.sim_actual_z - fp.location_z
+                if dx * dx + dy * dy + dz * dz > POSITION_GUARD_DISTANCE_SQ:
+                    self._teleport_simulated_player(
+                        fp, fp.location_x, fp.location_y, fp.location_z
+                    )
+        except Exception as exc:
+            self.logger.debug(f"simulated 行为执行失败 {fp.name}: {exc}")
+
+    def _teleport_simulated_player(
+        self, fp: FakePlayer, x: float, y: float, z: float
+    ) -> None:
+        """通过行为包传送 simulated 假人。"""
+        self._send_scriptevent("bot:teleport", {
+            "n": fp.name,
+            "x": round(float(x), 2),
+            "y": round(float(y), 2),
+            "z": round(float(z), 2),
+            "d": fp.dimension,
+        })
 
     def _handle_station(self, fp: FakePlayer, behavior: BotBehavior) -> None:
         """同月华 station 模式：锁定到指定坐标。"""
@@ -1193,6 +1287,11 @@ class BotPlugin(Plugin):
         try:
             target_loc = target.location
             bot_loc = fp.actor.location
+            # B11：跨维度不跟随（Endstone 跨维度 teleport 可能失败/拒绝）
+            bot_dim = self._dimension_id(bot_loc.dimension)
+            target_dim = self._dimension_id(target_loc.dimension)
+            if bot_dim != target_dim:
+                return
             dx = target_loc.x - bot_loc.x
             dy = target_loc.y - bot_loc.y
             dz = target_loc.z - bot_loc.z
@@ -1298,6 +1397,11 @@ class BotPlugin(Plugin):
             text = str(line).strip()
             if text.startswith("-"):
                 text = text[1:].strip()
+            # B7：兼容带序号前缀的格式，如 "- 0: bot_x: (0,0,0) to (16,0,16)"
+            if ":" in text:
+                head = text.split(":", 1)[0].strip()
+                if head.isdigit():
+                    text = text.split(":", 1)[1].strip()
             if not text.startswith("bot_") or ":" not in text:
                 continue
             name = text.split(":", 1)[0].strip()
@@ -1608,13 +1712,31 @@ class BotPlugin(Plugin):
                     )
 
     def _extract_behavior_pack(self, target_dir: Path) -> None:
-        """从 whl 包数据释放行为包文件。"""
+        """从 whl 包数据释放行为包文件。
+
+        目标目录已有同版本行为包时跳过，避免覆盖玩家手动改动。
+        """
         import shutil
 
         source_dir = Path(__file__).parent / "behavior_pack"
         if not source_dir.exists():
             self.logger.error(f"行为包源文件不存在: {source_dir}")
             return
+
+        # B9：版本一致则跳过释放
+        try:
+            src_manifest = json.loads(
+                (source_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            src_version = src_manifest.get("header", {}).get("version")
+            dst_manifest_path = target_dir / "manifest.json"
+            if src_version and dst_manifest_path.exists():
+                dst_manifest = json.loads(dst_manifest_path.read_text(encoding="utf-8"))
+                if dst_manifest.get("header", {}).get("version") == src_version:
+                    self.logger.info("行为包版本一致，跳过释放（保留现有文件）。")
+                    return
+        except Exception:
+            pass
 
         target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1705,7 +1827,7 @@ class BotPlugin(Plugin):
                 "  1. 服务器未重启（首次安装后需重启）\n"
                 "  2. Beta APIs 实验功能未启用\n"
                 "  3. 行为包未正确加载\n"
-                "simulated 类型假人将自动降级为 entity 类型。§r"
+                "已有 simulated 假人保持类型不变，行为包恢复连接后自动重建。§r"
             )
         # 失联后重置确认状态，恢复连接时重新生成
         for fp in list(self._bots.values()):
@@ -1765,6 +1887,12 @@ class BotPlugin(Plugin):
             for fp in pending:
                 self._spawn_simulated_player(fp)
 
+            # B4：补发失联期间积压的移除命令
+            if self._pending_sim_removes:
+                for name in list(self._pending_sim_removes):
+                    self._send_scriptevent("bot:remove", {"n": name})
+                    self._pending_sim_removes.discard(name)
+
         elif msg_id == "bot:spawned":
             # 生成确认：标记 confirmed，避免自愈任务反复重发
             name = str(data.get("n", ""))
@@ -1792,9 +1920,17 @@ class BotPlugin(Plugin):
                 if fp is None or fp.type != "simulated":
                     continue
                 try:
-                    fp.location_x = round(float(item.get("x", fp.location_x)), 2)
-                    fp.location_y = round(float(item.get("y", fp.location_y)), 2)
-                    fp.location_z = round(float(item.get("z", fp.location_z)), 2)
+                    # 实际位置始终记录（供行为系统计算）
+                    fp.sim_actual_x = round(float(item.get("x", fp.sim_actual_x)), 2)
+                    fp.sim_actual_y = round(float(item.get("y", fp.sim_actual_y)), 2)
+                    fp.sim_actual_z = round(float(item.get("z", fp.sim_actual_z)), 2)
+                    fp.sim_has_position = True
+                    # idle 假人不覆盖存储锚点（B3：位置守护需要锚点），
+                    # 其余模式用实际位置作为持久化位置
+                    if fp.behavior.movement != "idle":
+                        fp.location_x = fp.sim_actual_x
+                        fp.location_y = fp.sim_actual_y
+                        fp.location_z = fp.sim_actual_z
                     fp.dimension = str(item.get("d", fp.dimension)) or fp.dimension
                     self._db_dirty = True
                 except (TypeError, ValueError):
@@ -1824,7 +1960,16 @@ class BotPlugin(Plugin):
         })
 
     def _remove_simulated_player(self, fp: FakePlayer) -> None:
-        """通过行为包移除 SimulatedPlayer。"""
-        self._send_scriptevent("bot:remove", {"n": fp.name})
+        """通过行为包移除 SimulatedPlayer。
+
+        行为包失联时记入待移除名单，恢复连接后（pong 分支）补发，
+        避免行为包侧残留"幽灵玩家"。
+        """
+        if self._behavior_pack_active:
+            self._send_scriptevent("bot:remove", {"n": fp.name})
+            self._pending_sim_removes.discard(fp.name)
+        else:
+            self._pending_sim_removes.add(fp.name)
         fp.actor = None
         fp.entity_id = ""
+        fp.sim_has_position = False

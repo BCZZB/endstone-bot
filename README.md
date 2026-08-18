@@ -10,7 +10,7 @@ Minecraft 基岩版（BDS）假人管理插件，基于 [Endstone](https://githu
 
 - **两种假人类型**（同 mcbes-manage-script）
   - `entity` — NPC 实体 + `tickingarea` 常加载区块，区块保持 ticking，原版刷怪系统自然工作（**不含任何自制刷怪代码**）
-  - `simulated` — 通过内置行为包调用 `@minecraft/server-gametest` 的 `SimulatedPlayer`（原版同款模拟玩家），行为包不可用时自动降级为 `entity`
+  - `simulated` — 通过内置行为包调用 `@minecraft/server-gametest` 的 `SimulatedPlayer`（原版同款模拟玩家），行为包未就绪时**新建**假人自动降级为 `entity`（已有 simulated 假人保持类型，行为包恢复连接后自动重建）
 - **GUI 界面** — `/bot gui` 打开表单菜单：创建 / 列表 / 皮肤 / 行为 / 半径 / 移动 / 删除全部可视化操作；右键假人直接打开管理菜单
 - **自动部署** — whl 放入 `plugins/` 后首次启动自动完成：
   - 释放内置行为包到 `worlds/<world>/behavior_packs/`

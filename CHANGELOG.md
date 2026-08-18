@@ -5,6 +5,23 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [3.0.1] - 2026-08-18
+
+### 修复
+
+- `/bot radius <名字> 0` 与 GUI 行为不一致：命令版 0 半径会创建 1×1 区块常加载区域，现改为只移除不创建
+- simulated 假人生成时序：`_spawn_simulated_player` 在 `_bots` 注册之前发送，导致 `bot:spawned` 确认丢失、自愈重复重发；注册已提前，生成失败自动回滚
+- simulated 假人行为系统失效：行为包侧假人无 actor 引用，idle/station/follow 全部静默无效；新增基于行为包坐标上报 + `bot:teleport` 的行为执行（位置守护 / 站桩 / 跟随）
+- 删除 simulated 假人时行为包可能残留"幽灵玩家"：行为包失联期间移除命令记入待补发名单，恢复连接后自动补发
+- 行为包未响应日志声称"自动降级为 entity"与实际行为不符，修正文案；README 同步更正
+- `_list_bot_tickingareas` 兼容带序号前缀的输出格式（`- 0: bot_x: ...`），避免残留常加载区域漏清理
+- 跟随行为跨维度时提前返回，避免跨维度 teleport 失败
+- 皮肤命令权限检查提前到类型检查之前，避免非 owner 探测假人类型
+- `_extract_behavior_pack` 同版本行为包跳过释放，避免覆盖玩家手动改动
+- 清空全部后重置脏标记，防止定时任务回写空库
+- 服务器关闭时不再向行为包发送移除命令（行为包随服务停止，SimulatedPlayer 自然消失）
+- NBT list 元素类型为 END 但长度非 0 时防御性报错，避免位置指针错乱
+
 ## [3.0.0] - 2026-08-18
 
 ### 重写

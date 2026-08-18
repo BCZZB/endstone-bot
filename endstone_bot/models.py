@@ -180,6 +180,11 @@ class FakePlayer:
     last_area_key: tuple[str, int, int, int] | None = None
     last_action_tick: int = 0
     sim_spawn_confirmed: bool = False  # simulated: 行为包已确认生成
+    # simulated: 行为包上报的最新实际位置（idle 守护锚点不被覆盖）
+    sim_actual_x: float = 0.0
+    sim_actual_y: float = 0.0
+    sim_actual_z: float = 0.0
+    sim_has_position: bool = False  # simulated: 是否已收到首次坐标上报
 
     # === 持久化字段（同月华 IFakePlayer）===
     id: str = ""
