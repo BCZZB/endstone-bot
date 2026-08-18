@@ -29,9 +29,13 @@ Minecraft 基岩版（BDS）假人管理插件，基于 [Endstone](https://githu
 
 ## 安装
 
-### 方式一：从 whl 安装（推荐）
+### 方式一：从 GitHub Releases 下载（推荐）
+
+访问 [Releases 页面](https://github.com/BCZZB/endstone-bot/releases) 下载最新版 wheel：
 
 ```bash
+# 以 v3.0.1 为例
+wget https://github.com/BCZZB/endstone-bot/releases/download/v3.0.1/endstone_bot-3.0.1-py3-none-any.whl
 pip install endstone_bot-3.0.1-py3-none-any.whl
 ```
 
@@ -72,6 +76,8 @@ pip install dist/*.whl
 /bot clearall                  # 删除全部假人
 ```
 
+> **提示**：`/bot ping` 不是命令，行为包连接状态由插件自动检测（日志出现 `§a行为包已连接` 即代表就绪）。
+
 | 命令 | 说明 |
 |------|------|
 | `/bot` | 玩家执行直接打开 GUI；控制台显示用法 |
@@ -81,21 +87,26 @@ pip install dist/*.whl
 | `/bot info <name>` | 查看假人详细信息 |
 | `/bot skin <name> <0-15>` / `/bot skins` | 切换 / 查看皮肤变体 |
 | `/bot behavior <name> <idle\|station\|follow> [target]` | 设置行为 |
-| `/bot radius <name> <0-4>` | 调整常加载区域半径 |
+| `/bot radius <name> <0-4>` | 调整常加载区域半径（0 = 取消常加载） |
 | `/bot movehere <name>` | 将假人移动到执行者位置 |
 | `/bot clearall` | 删除全部假人（带确认） |
-| `/bot ping` | 检测行为包连接状态 |
 | `/bot credits` | 查看参考项目致谢 |
 
 默认权限为 OP，可在权限配置中调整 `endstone_bot.command`。
 
 ## 行为系统
 
+> v3.0.1 起，**两种假人类型均支持行为系统**：
+> - `entity` 类型通过 NPC 实体传送实现
+> - `simulated` 类型通过行为包坐标上报 + `bot:teleport` 桥接指令实现（无需修改行为包）
+
 | 行为 | 说明 |
 |------|------|
 | `idle` | 待机，位置守护生效（被推离后自动回到原位） |
-| `station` | 原地驻守，同 idle 但不参与跟随判定 |
-| `follow <target>` | 距离大于阈值传送至目标，否则保持跟随偏移 |
+| `station` | 原地驻守，即便被推走也会立刻回到站桩点 |
+| `follow <target>` | 距离大于阈值传送至目标身后，否则保持跟随偏移 |
+
+行为每 10 tick 检查一次；`follow` 模式下若目标不在线或跨维度，假人保持原地不动，目标回来/同维度后自动恢复跟随。
 
 ## 架构说明
 
