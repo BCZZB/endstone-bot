@@ -32,7 +32,7 @@ Minecraft 基岩版（BDS）假人管理插件，基于 [Endstone](https://githu
 ### 方式一：从 whl 安装（推荐）
 
 ```bash
-pip install endstone_bot-3.0.0-py3-none-any.whl
+pip install endstone_bot-3.0.1-py3-none-any.whl
 ```
 
 或将 whl 文件直接放入 BDS 的 `plugins/` 目录。
