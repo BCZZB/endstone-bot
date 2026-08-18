@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+insta/
+develop-eggs/
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# 打包与构建产物
+*.whl
+*.tar.gz
+MANIFEST
+
+# 测试与覆盖率
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+junit*.xml
+
+# 类型检查与 Lint
+.mypy_cache/
+.dmypy.json
+.ruff_cache/
+.pytype/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# 编辑器与系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 运行时数据（不入库）
+plugins/endstone_bot/bots.json
+*.log
+logs/
+worlds/
+
+# 本地上传与临时文件
+.uploads/
+.screenshots/
+.trae*/
+*.tmp
+*.bak

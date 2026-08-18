@@ -1,0 +1,30 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "EndstoneBot 假人桥接",
+    "description": "为 Endstone 假人插件提供 SimulatedPlayer 支持",
+    "uuid": "a3f7c2e1-8b4d-4f6a-9c3e-1d2b3c4d5e6f",
+    "version": [3, 0, 0],
+    "min_engine_version": [1, 21, 0]
+  },
+  "modules": [
+    {
+      "description": "SimulatedPlayer 桥接脚本",
+      "type": "script",
+      "language": "javascript",
+      "uuid": "b4e8d3f2-9c5e-4a7b-8d4f-2e3f4a5b6c7d",
+      "entry": "scripts/main.js",
+      "version": [3, 0, 0]
+    }
+  ],
+  "dependencies": [
+    {
+      "module_name": "@minecraft/server",
+      "version": "beta"
+    },
+    {
+      "module_name": "@minecraft/server-gametest",
+      "version": "beta"
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=64.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "endstone-bot"
+version = "3.0.0"
+description = "Minecraft 基岩版（BDS）假人管理插件：GUI、两种假人类型（NPC+tickingarea / SimulatedPlayer）、自愈恢复、位置守护、皮肤变体、行为系统。"
+readme = "README.md"
+license = { text = "PolyForm-Noncommercial-1.0.0" }
+requires-python = ">=3.10"
+keywords = ["minecraft", "bedrock", "bds", "endstone", "fake-player", "bot", "plugin"]
+authors = [{ name = "BCZZB" }]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: System Administrators",
+    "License :: Other/Proprietary License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Games/Entertainment",
+]
+
+# 参考的开源项目致谢
+# 1. mcbes-manage-script (https://github.com/YueHua46/mcbes-manage-script)
+#    许可证：PolyForm Noncommercial License 1.0.0
+#    借鉴：全部假人管理逻辑（两种假人类型、所有者追踪、自愈恢复、位置守护、
+#          伤害拦截、右键交互、皮肤变体、名称校验、头顶名称格式、持久化模型、行为系统）
+# 2. endstone_bot (原版 0.2.5)
+#    借鉴：NPC 实体生成、tickingarea 常加载区域管理
+
+[project.urls]
+Homepage = "https://github.com/BCZZB/endstone-bot"
+Repository = "https://github.com/BCZZB/endstone-bot"
+Issues = "https://github.com/BCZZB/endstone-bot/issues"
+Changelog = "https://github.com/BCZZB/endstone-bot/blob/main/CHANGELOG.md"
+"参考项目: mcbes-manage-script" = "https://github.com/YueHua46/mcbes-manage-script"
+
+[project.entry-points."endstone.plugin"]
+endstone_bot = "endstone_bot:BotPlugin"
+
+[tool.setuptools]
+packages = ["endstone_bot"]
+
+[tool.setuptools.package-data]
+endstone_bot = [
+    "behavior_pack/manifest.json",
+    "behavior_pack/scripts/*.js",
+    "behavior_pack/structures/**/*.mcstructure",
+]
