@@ -38,6 +38,7 @@ from endstone.event import (
     ActorDeathEvent,
     ActorKnockbackEvent,
     ActorRemoveEvent,
+    BeforeChatEvent,
     EventPriority,
     PlayerInteractActorEvent,
     ScriptMessageEvent,
@@ -46,6 +47,7 @@ from endstone.event import (
 from endstone.level import Location
 from endstone.plugin import Plugin
 
+from endstone_bot.ai_client import AIClient
 from endstone_bot.gui import BotGUI
 from endstone_bot.level_dat import enable_experiments, is_experiments_enabled
 from endstone_bot.models import (
@@ -114,6 +116,8 @@ class BotPlugin(Plugin):
                 "/bot movehere <name>",
                 "/bot clearall",
                 "/bot credits",
+                "/bot ai <name> on|off|add|remove|list [玩家]",
+                "/bot ai-config get|set <baseUrl> <apiKey> <model>",
             ],
             "permissions": ["endstone_bot.command"],
         },
@@ -154,6 +158,62 @@ class BotPlugin(Plugin):
         self._pending_sim_removes: set[str] = set()  # B4：失联期间待补发的移除名单
         self._bridge_token: str = ""  # 行为包鉴权令牌
         self._pong_received: bool = False  # 本轮 ping 是否收到 pong
+
+        # AI 配置持久化
+        self._ai_config_path = self.data_folder / "ai_config.json"
+        self._ai_config = self._load_ai_config()
+        self._ai = AIClient(
+            base_url=self._ai_config.get("baseUrl", ""),
+            api_key=self._ai_config.get("apiKey", ""),
+            model=self._ai_config.get("model", ""),
+        )
+        if self._ai.is_configured():
+            self.logger.info(f"AI 已配置：{self._ai.model} @ {self._ai.base_url}")
+        else:
+            self.logger.info("AI 未配置，假人 @ai 功能不可用。使用 /bot ai-config set 来配置。")
+
+    def _load_ai_config(self) -> dict:
+        """从 ai_config.json 加载 AI 配置。"""
+        path = self._ai_config_path
+        if not path.exists():
+            return {"baseUrl": "", "apiKey": "", "model": ""}
+        try:
+            import json as _json
+            data = _json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return {"baseUrl": "", "apiKey": "", "model": ""}
+            return {
+                "baseUrl": str(data.get("baseUrl", "")),
+                "apiKey": str(data.get("apiKey", "")),
+                "model": str(data.get("model", "")),
+            }
+        except Exception:
+            return {"baseUrl": "", "apiKey": "", "model": ""}
+
+    def _save_ai_config(self) -> None:
+        """保存 AI 配置到 ai_config.json。"""
+        import json as _json
+        try:
+            tmp = self._ai_config_path.with_suffix(".json.tmp")
+            tmp.write_text(_json.dumps(self._ai_config, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self._ai_config_path)
+        except Exception as exc:
+            self.logger.warning(f"保存 AI 配置失败: {exc}")
+
+    def _update_ai_config(self, base_url: str = "", api_key: str = "", model: str = "") -> None:
+        """更新 AI 配置并持久化。"""
+        if base_url is not None:
+            self._ai_config["baseUrl"] = base_url.strip()
+        if api_key is not None:
+            self._ai_config["apiKey"] = api_key.strip()
+        if model is not None:
+            self._ai_config["model"] = model.strip()
+        self._ai = AIClient(
+            base_url=self._ai_config.get("baseUrl", ""),
+            api_key=self._ai_config.get("apiKey", ""),
+            model=self._ai_config.get("model", ""),
+        )
+        self._save_ai_config()
 
         self._db_path = self.data_folder / "bots.json"
         self.data_folder.mkdir(parents=True, exist_ok=True)
@@ -249,6 +309,8 @@ class BotPlugin(Plugin):
             "movehere": lambda: self._cmd_movehere(sender, rest),
             "clearall": lambda: self._cmd_clearall(sender),
             "credits": lambda: self._cmd_credits(sender),
+            "ai": lambda: self._cmd_ai(sender, rest),
+            "ai-config": lambda: self._cmd_ai_config(sender, rest),
         }
 
         handler = handlers.get(sub)
@@ -814,6 +876,291 @@ class BotPlugin(Plugin):
     # ==================================================================
     # 事件处理（同月华 4 个事件订阅器）
     # ==================================================================
+
+    # ------------------------------------------------------------------
+    # @ai 聊天事件（玩家 @假人名字 唤醒 AI 对话）
+    # ------------------------------------------------------------------
+
+    @event_handler(priority=EventPriority.HIGHEST)
+    def on_before_chat(self, event: BeforeChatEvent) -> None:
+        """监听玩家聊天，检测 @假人名字 唤醒 AI 对话。"""
+        player = event.player
+        message = event.message.strip()
+
+        if not message.startswith("@"):
+            return
+
+        # 提取唤醒词（@假人名）
+        parts = message[1:].split(maxsplit=1)
+        if not parts:
+            return
+        bot_name = parts[0].strip()
+        query = parts[1].strip() if len(parts) > 1 else ""
+
+        # 查找匹配的假人
+        fp = self._get_by_name(bot_name)
+        if fp is None:
+            return  # 没有这个假人，不拦截
+
+        # 检查该假人 AI 是否开启
+        if not fp.ai_enabled:
+            return
+
+        player_name = str(getattr(player, "name", "") or "").strip()
+        if not player_name:
+            return
+
+        # 权限检查：owner 或白名单成员
+        is_owner = (
+            (fp.owner_uuid and str(getattr(player, "unique_id", "") or "") == fp.owner_uuid)
+            or (fp.owner_name and player_name.lower() == fp.owner_name.lower())
+        )
+        is_member = player_name.lower() in {n.lower() for n in fp.ai_members}
+
+        if not (is_owner or is_member):
+            # 未授权玩家：悄悄忽略（不暴露假人 AI 状态）
+            event.cancel()
+            return
+
+        # 权限通过，拦截聊天，交给 AI 处理
+        event.cancel()
+        self._handle_ai_mention(fp, player, query)
+
+    def _handle_ai_mention(
+        self, fp: FakePlayer, player: Any, query: str
+    ) -> None:
+        """处理 @假人名字 AI 对话。"""
+        if not self._ai.is_configured():
+            try:
+                player.send_message(f"§c假人 §b{fp.name} §c的 AI 未配置，请联系管理员。")
+            except Exception:
+                pass
+            return
+
+        if not query:
+            try:
+                player.send_message(
+                    f"§e用法：@{fp.name} <指令>\n"
+                    f"§7例如：@{fp.name} 去砍树"
+                )
+            except Exception:
+                pass
+            return
+
+        player_name = str(getattr(player, "name", "") or "")
+        self.logger.info(f"[AI] §b{fp.name}§r 收到 §e{player_name}§r: {query}")
+
+        # 构建系统 prompt
+        system_prompt = (
+            f"你是 Minecraft 服务器中的假人「{fp.name}」。\n"
+            f"玩家 {player_name} 通过 @ 指令向你提问。\n"
+            f"你只能通过发送聊天消息回复玩家（Minecraft 公开聊天）。\n"
+            f"请用简短、自然的中文回复玩家的指令，\n"
+            f"如果需要执行动作则直接说明你在做什么。\n"
+            f"不要假设你有脚 location 或背包信息，只能基于玩家指令回复。\n"
+            f"保持角色设定：假人助手，友好、有耐心。\n"
+            f"回复长度控制在 200 字符以内。"
+        )
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": query},
+        ]
+
+        try:
+            reply = self._ai.chat(messages, temperature=0.7, max_tokens=300)
+            # 发到公开聊天
+            if reply:
+                reply = str(reply).strip()[:200]
+                # 去掉可能的 Markdown 符号
+                reply = reply.replace("**", "").replace("*", "").replace("_", "")
+                player.get_server().dispatch_command(
+                    self.server.command_sender,
+                    f"say §b[{fp.name}]§r {reply}",
+                )
+                self.logger.info(f"[AI] §b{fp.name}§r 回复: {reply}")
+            else:
+                player.send_message(f"§c假人 §b{fp.name} §c返回为空，请稍后重试。")
+        except Exception as exc:
+            self.logger.warning(f"[AI] §b{fp.name}§r 处理失败: {exc}")
+            try:
+                player.send_message(f"§cAI 处理失败：{exc}。请稍后重试。")
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # AI 管理命令：/bot ai <name> on|off|add|remove|list [玩家]
+    # ------------------------------------------------------------------
+
+    def _cmd_ai(self, sender: CommandSender, args: list[str]) -> bool:
+        """AI 管理命令：开启/关闭/成员管理/查看 AI 配置。"""
+        if not args:
+            sender.send_error_message(
+                "用法：/bot ai <假人名> on|off|add|remove|list [玩家]"
+            )
+            return True
+
+        name = args[0]
+        fp = self._get_by_name(name)
+        if fp is None:
+            sender.send_error_message(f"假人 §b{name}§r 不存在。")
+            return True
+
+        # 权限检查：owner 或 OP
+        if not self._can_manage(sender, fp):
+            sender.send_error_message("无权管理该假人的 AI。")
+            return True
+
+        if len(args) < 2:
+            self._ai_show(fp, sender)
+            return True
+
+        action = args[1].lower()
+
+        if action in ("on", "enable", "开启"):
+            fp.ai_enabled = True
+            self._save_db()
+            sender.send_message(
+                f"假人 §b{fp.name}§r 的 AI 已开启。"
+                f"玩家可通过 §e@{fp.name} <指令>§r 与 AI 对话。"
+            )
+            self.logger.info(f"假人 {fp.name} AI 已开启")
+            return True
+
+        if action in ("off", "disable", "关闭"):
+            fp.ai_enabled = False
+            self._save_db()
+            sender.send_message(f"假人 §b{fp.name}§r 的 AI 已关闭。")
+            self.logger.info(f"假人 {fp.name} AI 已关闭")
+            return True
+
+        if action in ("add", "添加", "+"):
+            if len(args) < 3:
+                sender.send_error_message("用法：/bot ai <名字> add <玩家>")
+                return True
+            target = args[2].strip()
+            if not target:
+                sender.send_error_message("玩家名不能为空。")
+                return True
+            target_lower = target.lower()
+            if target_lower in {n.lower() for n in fp.ai_members}:
+                sender.send_message(f"§e{target}§r 已在授权列表中。")
+                return True
+            fp.ai_members.append(target)
+            self._save_db()
+            sender.send_message(
+                f"已授权 §e{target}§r 使用假人 §b{fp.name}§r 的 AI。"
+            )
+            self.logger.info(f"假人 {fp.name} 授权 {target} 使用 AI")
+            return True
+
+        if action in ("remove", "del", "删除", "-"):
+            if len(args) < 3:
+                sender.send_error_message("用法：/bot ai <名字> remove <玩家>")
+                return True
+            target = args[2].strip()
+            target_lower = target.lower()
+            for i, m in enumerate(fp.ai_members):
+                if m.lower() == target_lower:
+                    fp.ai_members.pop(i)
+                    self._save_db()
+                    sender.send_message(
+                        f"已移除 §e{target}§r 的 AI 授权。"
+                    )
+                    self.logger.info(f"假人 {fp.name} 移除 {target} AI 授权")
+                    return True
+            sender.send_message(f"§e{target}§r 不在授权列表中。")
+            return True
+
+        if action == "list" or action == "列表":
+            self._ai_show(fp, sender)
+            return True
+
+        sender.send_error_message(
+            "用法：/bot ai <名字> on|off|add|remove|list [玩家]"
+        )
+        return True
+
+    def _ai_show(self, fp: FakePlayer, sender: CommandSender) -> None:
+        """展示假人的 AI 配置。"""
+        status = "§a开启" if fp.ai_enabled else "§c关闭"
+        members = ", ".join(f"§e{m}§r" for m in fp.ai_members) or "§7（空）"
+        ai_ready = "§a已配置" if self._ai.is_configured() else "§c未配置"
+        sender.send_message(
+            f"§b===== 假人 §a{fp.name} §bAI 配置 =====\n"
+            f"  AI 状态：{status}\n"
+            f"  API：{ai_ready}"
+            + (f" §7({self._ai.model})" if self._ai.model else "")
+            + f"\n  授权成员：{members}"
+        )
+
+    # ------------------------------------------------------------------
+    # AI 全局配置命令：/bot ai-config get|set
+    # ------------------------------------------------------------------
+
+    def _cmd_ai_config(self, sender: CommandSender, args: list[str]) -> bool:
+        """查看或设置全局 AI 配置（API 地址、Key、模型）。"""
+        if not args:
+            self._ai_config_show(sender)
+            return True
+
+        action = args[0].lower()
+        if action == "get":
+            self._ai_config_show(sender)
+            return True
+
+        if action == "set":
+            if len(args) < 4:
+                sender.send_error_message(
+                    "用法：/bot ai-config set <baseUrl> <apiKey> <model>\n"
+                    "示例：/bot ai-config set https://api.openai.com/v1 sk-xxx gpt-4o-mini"
+                )
+                return True
+            base_url = args[1].strip()
+            api_key = args[2].strip()
+            model = args[3].strip()
+            self._update_ai_config(base_url=base_url, api_key=api_key, model=model)
+            sender.send_message(
+                f"§aAI 配置已更新：\n"
+                f"  地址：{base_url}\n"
+                f"  模型：{model}\n"
+                f"  状态：{'§a可用' if self._ai.is_configured() else '§c配置无效，请检查参数'}"
+            )
+            self.logger.info(f"AI 配置已更新 by {getattr(sender, 'name', 'console')}: {base_url} {model}")
+            return True
+
+        if action == "test":
+            if not self._ai.is_configured():
+                sender.send_error_message("AI 未配置，请先 /bot ai-config set")
+                return True
+            sender.send_message("§e正在测试 AI 连接...")
+            test_reply = self._ai.chat([{"role": "user", "content": "你好，返回 OK"}], temperature=0.1, max_tokens=20)
+            if test_reply and "OK" in test_reply.upper():
+                sender.send_message(f"§aAI 测试成功：{test_reply.strip()}")
+            else:
+                sender.send_error_message(f"§cAI 测试失败：{test_reply}")
+            return True
+
+        sender.send_error_message("用法：/bot ai-config get|set|test")
+        return True
+
+    def _ai_config_show(self, sender: CommandSender) -> None:
+        """展示当前 AI 全局配置。"""
+        cfg = self._ai_config
+        url = cfg.get("baseUrl", "")
+        model = cfg.get("model", "")
+        key_masked = cfg.get("apiKey", "")
+        if key_masked:
+            key_masked = key_masked[:8] + "****" if len(key_masked) > 8 else "****"
+        ready = "§a可用" if self._ai.is_configured() else "§c未配置"
+        sender.send_message(
+            f"§b===== AI 全局配置 =====\n"
+            f"  状态：{ready}\n"
+            f"  地址：§7{url or '（未设置）'}\n"
+            f"  模型：§7{model or '（未设置）'}\n"
+            f"  Key：§7{key_masked or '（未设置）'}\n"
+            f"\n§7配置：/bot ai-config set <baseUrl> <apiKey> <model>"
+        )
 
     # ------------------------------------------------------------------
     # 伤害拦截（同月华 entityHurt → ActorDamageEvent）

@@ -185,6 +185,9 @@ class FakePlayer:
     sim_actual_y: float = 0.0
     sim_actual_z: float = 0.0
     sim_has_position: bool = False  # simulated: 是否已收到首次坐标上报
+    # === AI 功能（同 mcbes-manage-script 扩展）===
+    ai_enabled: bool = False  # 该假人是否启用 AI 对话
+    ai_members: list[str] = field(default_factory=list)  # 允许使用 @ai 的玩家列表
 
     # === 持久化字段（同月华 IFakePlayer）===
     id: str = ""
@@ -218,6 +221,8 @@ class FakePlayer:
             "skinId": int(self.skin_id),
             "entityId": self.entity_id,
             "behavior": self.behavior.to_dict(),
+            "aiEnabled": bool(self.ai_enabled),
+            "aiMembers": list(self.ai_members),
         }
 
     @classmethod
@@ -243,6 +248,8 @@ class FakePlayer:
             skin_id=normalize_skin_id(data.get("skinId", 0)),
             entity_id=str(data.get("entityId", "")),
             behavior=BotBehavior.from_dict(data.get("behavior")),
+            ai_enabled=bool(data.get("aiEnabled", False)),
+            ai_members=list(data.get("aiMembers", [])) if isinstance(data.get("aiMembers"), list) else [],
         )
 
 

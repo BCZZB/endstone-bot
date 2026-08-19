@@ -108,6 +108,68 @@ pip install dist/*.whl
 
 行为每 10 tick 检查一次；`follow` 模式下若目标不在线或跨维度，假人保持原地不动，目标回来/同维度后自动恢复跟随。
 
+## @ai AI 对话
+
+假人支持 AI 对话功能，玩家在聊天框 `@假人名字` 即可唤醒 AI 与假人对话。
+
+### 使用方式
+
+```
+@Steve 你好
+@Steve 去砍树
+```
+
+唤醒词是假人的名字（叫什么就 @ 什么）。玩家需要对假人 AI 有权限才能使用（见下方授权）。
+
+### 管理员设置
+
+**1. 配置 AI 模型**（OP 专用）
+
+```text
+/bot ai-config set https://api.openai.com/v1 sk-your-api-key gpt-4o-mini
+```
+
+**2. 开启假人 AI**
+
+```text
+/bot ai Steve on
+```
+
+**3. 授权玩家使用**
+
+```text
+/bot ai Steve add 玩家名字     # 添加授权
+/bot ai Steve remove 玩家名字  # 移除授权
+/bot ai Steve list             # 查看 AI 配置和授权列表
+```
+
+> 假人 owner（创建者）和 OP 默认可用，无需额外授权。
+
+### 命令汇总
+
+| 命令 | 说明 |
+|------|------|
+| `/bot ai-config get` | 查看当前 AI 配置 |
+| `/bot ai-config set <url> <key> <model>` | 设置 AI API |
+| `/bot ai-config test` | 测试 AI 连接 |
+| `/bot ai <名字> on` | 开启假人 AI |
+| `/bot ai <名字> off` | 关闭假人 AI |
+| `/bot ai <名字> add <玩家>` | 添加授权玩家 |
+| `/bot ai <名字> remove <玩家>` | 移除授权玩家 |
+| `/bot ai <名字> list` | 查看 AI 配置 |
+
+### AI 模型支持
+
+支持**任何 OpenAI 兼容格式的 API**，包括：
+
+- OpenAI 官方（GPT-4o / GPT-4o-mini 等）
+- DeepSeek
+- 火山引擎（豆包 / 扣子等）
+- 本地 Ollama
+- 其他兼容 OpenAI 格式的模型服务
+
+只需在 `/bot ai-config set` 中填入对应的 `baseUrl`、`apiKey`、`model` 即可。
+
 ## 架构说明
 
 ```text

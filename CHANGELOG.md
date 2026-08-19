@@ -5,7 +5,21 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [3.0.1] - 2026-08-18
+## [3.1.1] - 2026-08-19
+
+### 新增
+
+- **@ai AI 对话功能**：玩家在聊天框 `@假人名字` 即可唤醒 AI 与假人对话
+  - 唤醒词：假人名字（叫什么就 @ 什么）
+  - 权限控制：假人开启 AI + 玩家在白名单（或假人 owner / OP）
+  - 新增 `ai_client.py`：OpenAI 兼容格式 AI 客户端（支持任意兼容 API）
+  - 新增 `/bot ai <名字> on|off|add|remove|list`：AI 开关和成员管理
+  - 新增 `/bot ai-config get|set|test`：全局 AI API 配置
+  - AI 配置持久化到 `plugins/endstone_bot/ai_config.json`
+  - `FakePlayer` 模型新增 `ai_enabled` / `ai_members` 字段
+  - BeforeChatEvent 监听 `@假人名字` 唤醒词
+
+## [3.1.0] - 2026-08-19
 
 ### 修复
 
