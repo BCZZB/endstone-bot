@@ -34,9 +34,9 @@ Minecraft 基岩版（BDS）假人管理插件，基于 [Endstone](https://githu
 访问 [Releases 页面](https://github.com/BCZZB/endstone-bot/releases) 下载最新版 wheel：
 
 ```bash
-# 以 v3.0.1 为例
-wget https://github.com/BCZZB/endstone-bot/releases/download/v3.0.1/endstone_bot-3.0.1-py3-none-any.whl
-pip install endstone_bot-3.0.1-py3-none-any.whl
+# 以 v3.1.0 为例
+wget https://github.com/BCZZB/endstone-bot/releases/download/v3.1.0/endstone_bot-3.1.0-py3-none-any.whl
+pip install endstone_bot-3.1.0-py3-none-any.whl
 ```
 
 或将 whl 文件直接放入 BDS 的 `plugins/` 目录。
@@ -96,7 +96,7 @@ pip install dist/*.whl
 
 ## 行为系统
 
-> v3.0.1 起，**两种假人类型均支持行为系统**：
+> v3.1.0 起，**两种假人类型均支持行为系统**：
 > - `entity` 类型通过 NPC 实体传送实现
 > - `simulated` 类型通过行为包坐标上报 + `bot:teleport` 桥接指令实现（无需修改行为包）
 
