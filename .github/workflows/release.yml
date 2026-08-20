@@ -30,13 +30,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install build
 
+      - name: Run unit tests
+        run: python -m unittest tests.test_ai_client tests.test_models -v
+
       - name: Build package
         run: python -m build
 
-      - name: Verify wheel contents (behavior pack included)
+      - name: Verify wheel contents and entry point
         run: |
+          python -m unittest tests.test_wheel -v
           python -m zipfile -l dist/*.whl | grep -E \
-            'behavior_pack/manifest.json|behavior_pack/scripts/main.js|endstone_bot/bot_plugin.py'
+            'behavior_pack/manifest.json|behavior_pack/scripts/main.js|endstone_bot/bot_plugin.py|endstone_bot/ai_client.py'
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

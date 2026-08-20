@@ -119,7 +119,9 @@ pip install dist/*.whl
 @Steve 去砍树
 ```
 
-唤醒词是假人的名字（叫什么就 @ 什么）。玩家需要对假人 AI 有权限才能使用（见下方授权）。
+唤醒词是假人的名字（叫什么就 @ 什么）。玩家需要对假人 AI 有权限才能使用（见下方授权）。v3.2.0 起，模型会返回受约束的结构化动作并真正控制假人，而不只是文字回复。
+
+支持的 AI 动作：`idle`、`station`、`follow`、`movehere`、`stop`、`say`。未知动作和服务器命令会被丢弃。每个假人同一时间只处理一个请求，每位玩家有 4 秒冷却，并保留最近 12 条短期对话记忆。
 
 ### 管理员设置
 
@@ -151,7 +153,9 @@ pip install dist/*.whl
 |------|------|
 | `/bot ai-config get` | 查看当前 AI 配置 |
 | `/bot ai-config set <url> <key> <model>` | 设置 AI API |
-| `/bot ai-config test` | 测试 AI 连接 |
+| `/bot ai-config test` | 后台异步测试 AI 连接 |
+| `/bot ai-config models` | 获取 API 提供的模型列表 |
+| `/bot ai-config clear` | 清除 AI API 配置 |
 | `/bot ai <名字> on` | 开启假人 AI |
 | `/bot ai <名字> off` | 关闭假人 AI |
 | `/bot ai <名字> add <玩家>` | 添加授权玩家 |

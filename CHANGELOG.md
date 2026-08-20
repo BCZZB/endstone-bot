@@ -5,6 +5,34 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [3.2.0] - 2026-08-20
+
+### 新增
+
+- AI 结构化动作协议：模型返回 `reply/actions` JSON，可真正控制假人
+- 动作白名单：`idle`、`station`、`follow`、`movehere`、`stop`、`say`
+- entity 与 simulated 假人共用 AI 行为执行接口
+- 每个“假人 + 玩家”保留最近 12 条短期对话记忆
+- 固定 4 线程 AI 请求池、每玩家 4 秒冷却、每个假人单请求锁
+- 游戏内 GUI 新增“AI 模型配置”和单假人“AI 设置”页面
+- `/bot ai-config models` 获取模型列表，`clear` 清除配置
+- 自动化测试：AI 响应过滤、HTTP 兼容、模型持久化、wheel 入口点
+
+### 优化
+
+- HTTP 在工作线程执行，消息发送与假人动作回到 Endstone 主线程
+- API Key 配置文件权限自动设置为 `600`
+- 未授权、限流、忙碌、未配置均提供明确玩家提示
+- AI 错误不再作为普通公开聊天广播，只在控制台记录简化原因
+- GitHub Actions 在构建前运行测试，并验证 `ai_client.py`、行为包和入口点
+
+### 实机验证
+
+- Endstone 0.11.9 / BDS 1.26.44.3 / Ubuntu Linux x86_64
+- 本地 wheel `endstone_bot-3.2.0-py3-none-any.whl` 加载、启用、命令注册通过
+- 控制台 `plugins` 返回 `Plugins (1): bot`
+- `/bot ai-config get` 正常执行
+
 ## [3.1.2] - 2026-08-20
 
 ### 修复

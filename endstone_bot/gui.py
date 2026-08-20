@@ -77,6 +77,10 @@ class BotGUI:
 
         if self._plugin._is_admin(player):
             form.add_button(
+                "§5AI 模型配置\n§7设置 API 地址、Key 与模型",
+                on_click=lambda p: self.open_ai_global_form(p),
+            )
+            form.add_button(
                 "§c清除全部假人\n§7删除所有假人和常加载区域",
                 on_click=lambda p: self.open_clearall_confirm(p),
             )
@@ -217,6 +221,11 @@ class BotGUI:
         )
 
         form.add_button(
+            "§5AI 设置\n§7开关 AI 与管理授权成员",
+            on_click=lambda p: self.open_ai_bot_form(p, fp) if can_manage else self._deny(p),
+        )
+
+        form.add_button(
             "§b移动到当前位置\n§7将假人传送到你身边",
             on_click=lambda p: self._do_movehere(p, fp) if can_manage else self._deny(p),
         )
@@ -331,6 +340,83 @@ class BotGUI:
                 return
             radius = int(float(data[0])) if data[0] is not None else 4
             self._plugin._gui_set_radius(p, fp, radius)
+
+        form.on_submit = on_submit
+        player.send_form(form)
+
+    # ==================================================================
+    # AI 设置
+    # ==================================================================
+
+    def open_ai_bot_form(self, player: Any, fp: FakePlayer) -> None:
+        """管理单个假人的 AI 开关和成员白名单。"""
+        form = ModalForm(
+            title=f"§l§5{fp.name} - AI 设置",
+            controls=[
+                Toggle(label="启用 AI 对话", default_value=bool(fp.ai_enabled)),
+                TextInput(
+                    label="授权玩家（英文逗号分隔）",
+                    placeholder="PlayerA,PlayerB",
+                    default_value=",".join(fp.ai_members),
+                ),
+                Label(text=f"唤醒方式：@{fp.name} <指令>"),
+            ],
+            submit_button="保存",
+        )
+
+        def on_submit(p: Any, result: str) -> None:
+            if result is None:
+                return
+            try:
+                data = json.loads(result)
+            except (json.JSONDecodeError, TypeError):
+                p.send_message("§c表单数据解析失败。")
+                return
+            enabled = bool(data[0]) if data else False
+            members = []
+            if len(data) > 1 and data[1]:
+                for value in str(data[1]).split(","):
+                    name = value.strip()
+                    if name and name.lower() not in {x.lower() for x in members}:
+                        members.append(name)
+            fp.ai_enabled = enabled
+            fp.ai_members = members
+            self._plugin._save_db()
+            p.send_message(f"§a{fp.name} AI 设置已保存。")
+
+        form.on_submit = on_submit
+        player.send_form(form)
+
+    def open_ai_global_form(self, player: Any) -> None:
+        """管理员配置 OpenAI 兼容 API。"""
+        cfg = self._plugin._ai_config
+        form = ModalForm(
+            title="§l§5AI 模型配置",
+            controls=[
+                TextInput(label="API 地址", placeholder="https://api.openai.com/v1", default_value=cfg.get("baseUrl", "")),
+                TextInput(label="API Key（留空则保留原 Key）", placeholder="sk-...", default_value=""),
+                TextInput(label="模型名称", placeholder="gpt-4o-mini", default_value=cfg.get("model", "")),
+            ],
+            submit_button="保存",
+        )
+
+        def on_submit(p: Any, result: str) -> None:
+            if result is None:
+                return
+            try:
+                data = json.loads(result)
+            except (json.JSONDecodeError, TypeError):
+                p.send_message("§c表单数据解析失败。")
+                return
+            base_url = str(data[0] or "").strip()
+            api_key = str(data[1] or "").strip() if len(data) > 1 else ""
+            model = str(data[2] or "").strip() if len(data) > 2 else ""
+            self._plugin._update_ai_config(
+                base_url=base_url,
+                api_key=api_key or None,
+                model=model,
+            )
+            p.send_message("§aAI 模型配置已保存。可执行 /bot ai-config test 测试连接。")
 
         form.on_submit = on_submit
         player.send_form(form)

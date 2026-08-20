@@ -30,6 +30,9 @@ import math
 import secrets
 import shlex
 import threading
+import time
+from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +51,7 @@ from endstone.event import (
 from endstone.level import Location
 from endstone.plugin import Plugin
 
-from endstone_bot.ai_client import AIClient
+from endstone_bot.ai_client import AIClient, AIResponse
 from endstone_bot.gui import BotGUI
 from endstone_bot.level_dat import enable_experiments, is_experiments_enabled
 from endstone_bot.models import (
@@ -157,6 +160,14 @@ class BotPlugin(Plugin):
             api_key=self._ai_config.get("apiKey", ""),
             model=self._ai_config.get("model", ""),
         )
+        # AI 运行时：固定线程池、假人级并发锁、玩家冷却、短期会话记忆。
+        self._ai_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="endstone-bot-ai")
+        self._ai_busy: set[str] = set()
+        self._ai_last_request: dict[tuple[str, str], float] = {}
+        self._ai_history: dict[tuple[str, str], deque[dict[str, str]]] = defaultdict(
+            lambda: deque(maxlen=12)
+        )
+        self._ai_runtime_lock = threading.RLock()
         if self._ai.is_configured():
             self.logger.info(f"AI 已配置：{self._ai.model} @ {self._ai.base_url}")
         else:
@@ -223,6 +234,10 @@ class BotPlugin(Plugin):
             tmp = self._ai_config_path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(self._ai_config, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(self._ai_config_path)
+            try:
+                self._ai_config_path.chmod(0o600)
+            except OSError:
+                pass
         except Exception as exc:
             self.logger.warning(f"保存 AI 配置失败: {exc}")
 
@@ -247,6 +262,8 @@ class BotPlugin(Plugin):
 
     def on_disable(self) -> None:
         # 同月华析构：保存数据
+        if hasattr(self, "_ai_executor"):
+            self._ai_executor.shutdown(wait=False, cancel_futures=True)
         with self._lock:
             self._save_db()
             for fp in list(self._bots.values()):
@@ -874,114 +891,145 @@ class BotPlugin(Plugin):
 
     @event_handler(priority=EventPriority.HIGHEST)
     def on_player_chat(self, event: PlayerChatEvent) -> None:
-        """监听玩家聊天，检测 @假人名字 唤醒 AI 对话。"""
-        player = event.player
-        message = event.message.strip()
-
+        """检测 @假人名字，并执行权限、冷却和并发检查。"""
+        message = str(event.message or "").strip()
         if not message.startswith("@"):
             return
-
-        # 提取唤醒词（@假人名）
         parts = message[1:].split(maxsplit=1)
         if not parts:
             return
-        bot_name = parts[0].strip()
-        query = parts[1].strip() if len(parts) > 1 else ""
-
-        # 查找匹配的假人
-        fp = self._get_by_name(bot_name)
-        if fp is None:
-            return  # 没有这个假人，不拦截
-
-        # 检查该假人 AI 是否开启
-        if not fp.ai_enabled:
+        fp = self._get_by_name(parts[0])
+        if fp is None or not fp.ai_enabled:
             return
-
+        event.cancel()
+        player = event.player
         player_name = str(getattr(player, "name", "") or "").strip()
-        if not player_name:
-            return
-
-        # 权限检查：owner 或白名单成员
-        is_owner = (
-            (fp.owner_uuid and str(getattr(player, "unique_id", "") or "") == fp.owner_uuid)
+        player_uuid = str(getattr(player, "unique_id", "") or "")
+        query = parts[1].strip() if len(parts) > 1 else ""
+        is_owner = bool(
+            (fp.owner_uuid and player_uuid == fp.owner_uuid)
             or (fp.owner_name and player_name.lower() == fp.owner_name.lower())
         )
-        is_member = player_name.lower() in {n.lower() for n in fp.ai_members}
-
-        if not (is_owner or is_member):
-            # 未授权玩家：取消事件，不公开聊天
-            event.cancel()
+        is_member = player_name.lower() in {x.lower() for x in fp.ai_members}
+        if not (is_owner or is_member or self._is_admin(player)):
+            player.send_message(f"§c你没有使用假人 §b{fp.name}§c AI 的权限。")
             return
-
-        # 权限通过，拦截聊天，交给 AI 处理
-        event.cancel()
-        # 用线程处理网络 IO，避免阻塞服务器主线程
-        threading.Thread(
-            target=self._handle_ai_mention,
-            args=(fp, player, query),
-            daemon=True,
-        ).start()
-
-    def _handle_ai_mention(
-        self, fp: FakePlayer, player: Any, query: str
-    ) -> None:
-        """处理 @假人名字 AI 对话。"""
-        if not self._ai.is_configured():
-            try:
-                player.send_message(f"§c假人 §b{fp.name} §c的 AI 未配置，请联系管理员。")
-            except Exception:
-                pass
-            return
-
         if not query:
-            try:
-                player.send_message(
-                    f"§e用法：@{fp.name} <指令>\n"
-                    f"§7例如：@{fp.name} 去砍树"
-                )
-            except Exception:
-                pass
+            player.send_message(f"§e用法：@{fp.name} <指令>，例如：@{fp.name} 跟着我")
+            return
+        if not self._ai.is_configured():
+            player.send_message("§cAI 尚未配置，请管理员使用 /bot ai-config set。")
             return
 
-        player_name = str(getattr(player, "name", "") or "")
-        self.logger.info(f"[AI] §b{fp.name}§r 收到 §e{player_name}§r: {query}")
+        key = (fp.id, player_uuid or player_name.lower())
+        now = time.monotonic()
+        with self._ai_runtime_lock:
+            last = self._ai_last_request.get(key, 0.0)
+            if now - last < 4.0:
+                player.send_message("§e请求太快，请等待几秒后再试。")
+                return
+            if fp.id in self._ai_busy:
+                player.send_message(f"§e{fp.name} 正在处理上一条指令，请稍候。")
+                return
+            self._ai_last_request[key] = now
+            self._ai_busy.add(fp.id)
 
-        # 构建系统 prompt
-        system_prompt = (
-            f"你是 Minecraft 服务器中的假人「{fp.name}」。\n"
-            f"玩家 {player_name} 通过 @ 指令向你提问。\n"
-            f"你只能通过发送聊天消息回复玩家（Minecraft 公开聊天）。\n"
-            f"请用简短、自然的中文回复玩家的指令，\n"
-            f"如果需要执行动作则直接说明你在做什么。\n"
-            f"不要假设你有脚 location 或背包信息，只能基于玩家指令回复。\n"
-            f"保持角色设定：假人助手，友好、有耐心。\n"
-            f"回复长度控制在 200 字符以内。"
+        player.send_message(f"§7{fp.name} 正在思考...")
+        history = list(self._ai_history[key])
+        self._ai_executor.submit(
+            self._request_ai, fp.id, player_uuid, player_name, query, key, history
         )
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": query},
-        ]
+    def _request_ai(
+        self, fp_id: str, player_uuid: str, player_name: str,
+        query: str, key: tuple[str, str], history: list[dict[str, str]],
+    ) -> None:
+        fp = self._bots.get(fp_id)
+        if fp is None:
+            with self._ai_runtime_lock:
+                self._ai_busy.discard(fp_id)
+            return
+        system = (
+            f"你是 Minecraft 基岩版服务器中的假人 {fp.name}。"
+            "你必须只返回一个 JSON 对象，不要使用 Markdown。格式："
+            '{"reply":"简短中文回复","actions":[{"name":"动作","args":{}}]}。'
+            "允许动作仅有：idle、station、follow、movehere、stop、say。"
+            "follow 的 args.target 填玩家名；say 的 args.message 填聊天内容。"
+            f"当前发令玩家是 {player_name}。跟着我表示 follow target={player_name}；"
+            "过来表示 movehere；停下表示 stop；原地驻守表示 station。"
+        )
+        messages = [{"role": "system", "content": system}, *history]
+        messages.append({"role": "user", "content": query})
+        result = self._ai.chat(messages, temperature=0.2, max_tokens=400)
+
+        def finish() -> None:
+            try:
+                current = self._bots.get(fp_id)
+                player = self._find_online_player_by_uuid_or_name(player_uuid, player_name)
+                if current is None:
+                    return
+                if not result.ok:
+                    if player is not None:
+                        player.send_message("§cAI 暂时不可用，请稍后重试。")
+                    self.logger.warning(f"[AI] {current.name} 请求失败: {result.error}")
+                    return
+                self._ai_history[key].append({"role": "user", "content": query[:500]})
+                self._ai_history[key].append({"role": "assistant", "content": result.reply[:500]})
+                if result.reply:
+                    self.server.broadcast_message(f"§b[{current.name}]§r {result.reply}")
+                self._execute_ai_actions(current, player, player_name, result)
+            finally:
+                with self._ai_runtime_lock:
+                    self._ai_busy.discard(fp_id)
 
         try:
-            reply = self._ai.chat(messages, temperature=0.7, max_tokens=300)
-            # 发到公开聊天
-            if reply:
-                reply = str(reply).strip()[:200]
-                # 去掉可能的 Markdown 符号
-                reply = reply.replace("**", "").replace("*", "").replace("_", "")
-                self.server.broadcast_message(
-                    f"§b[{fp.name}]§r {reply}"
-                )
-                self.logger.info(f"[AI] §b{fp.name}§r 回复: {reply}")
-            else:
-                player.send_message(f"§c假人 §b{fp.name} §c返回为空，请稍后重试。")
+            self.server.scheduler.run_task(self, finish, delay=0)
         except Exception as exc:
-            self.logger.warning(f"[AI] §b{fp.name}§r 处理失败: {exc}")
+            self.logger.warning(f"提交 AI 主线程回调失败: {exc}")
+            with self._ai_runtime_lock:
+                self._ai_busy.discard(fp_id)
+
+    def _find_online_player_by_uuid_or_name(self, player_uuid: str, player_name: str) -> Any | None:
+        for player in self.server.online_players:
             try:
-                player.send_message(f"§cAI 处理失败：{exc}。请稍后重试。")
+                if player_uuid and str(getattr(player, "unique_id", "") or "") == player_uuid:
+                    return player
+                if str(player.name).lower() == player_name.lower():
+                    return player
             except Exception:
-                pass
+                continue
+        return None
+
+    def _execute_ai_actions(
+        self, fp: FakePlayer, player: Any | None,
+        player_name: str, result: AIResponse,
+    ) -> None:
+        """仅在主线程执行经过白名单过滤的动作。"""
+        for action in result.actions:
+            name = action["name"]
+            args = action.get("args", {})
+            if name in ("idle", "stop"):
+                fp.behavior.movement = "idle"
+                fp.behavior.target_player = ""
+                self._apply_behavior(fp, force=True)
+            elif name == "station" and player is not None:
+                loc = player.location
+                fp.behavior.movement = "station"
+                fp.behavior.station_x = round(float(loc.x), 2)
+                fp.behavior.station_y = round(float(loc.y), 2)
+                fp.behavior.station_z = round(float(loc.z), 2)
+            elif name == "follow":
+                target = str(args.get("target", "") or player_name).strip()
+                if self._find_online_player(target) is not None:
+                    fp.behavior.movement = "follow"
+                    fp.behavior.target_player = target
+            elif name == "movehere" and player is not None:
+                self._cmd_movehere(player, [fp.name])
+            elif name == "say":
+                msg = str(args.get("message", "") or "")[:180]
+                if msg:
+                    self.server.broadcast_message(f"§b[{fp.name}]§r {msg}")
+        self._save_db()
 
     # ------------------------------------------------------------------
     # AI 管理命令：/bot ai <name> on|off|add|remove|list [玩家]
@@ -1095,6 +1143,9 @@ class BotPlugin(Plugin):
 
     def _cmd_ai_config(self, sender: CommandSender, args: list[str]) -> bool:
         """查看或设置全局 AI 配置（API 地址、Key、模型）。"""
+        if not self._is_admin(sender):
+            sender.send_error_message("只有 OP 可以管理全局 AI 模型配置。")
+            return True
         if not args:
             self._ai_config_show(sender)
             return True
@@ -1128,12 +1179,47 @@ class BotPlugin(Plugin):
             if not self._ai.is_configured():
                 sender.send_error_message("AI 未配置，请先 /bot ai-config set")
                 return True
-            sender.send_message("§e正在测试 AI 连接...")
-            test_reply = self._ai.chat([{"role": "user", "content": "你好，返回 OK"}], temperature=0.1, max_tokens=20)
-            if test_reply and "OK" in test_reply.upper():
-                sender.send_message(f"§aAI 测试成功：{test_reply.strip()}")
-            else:
-                sender.send_error_message(f"§cAI 测试失败：{test_reply}")
+            sender.send_message("§e正在后台测试 AI 连接...")
+            sender_name = str(getattr(sender, "name", "") or "")
+
+            def test_request() -> None:
+                result = self._ai.chat(
+                    [{"role": "user", "content": '只返回 JSON：{"reply":"OK","actions":[]}' }],
+                    temperature=0.1,
+                    max_tokens=80,
+                )
+
+                def finish() -> None:
+                    target = self._find_online_player(sender_name) or sender
+                    if result.ok:
+                        target.send_message(f"§aAI 测试成功：{result.reply or 'OK'}")
+                    else:
+                        target.send_error_message(f"§cAI 测试失败：{result.error}")
+
+                self.server.scheduler.run_task(self, finish, delay=0)
+
+            self._ai_executor.submit(test_request)
+            return True
+
+        if action == "models":
+            if not self._ai.base_url:
+                sender.send_error_message("请先配置 API 地址。")
+                return True
+            sender.send_message("§e正在获取模型列表...")
+
+            def list_request() -> None:
+                models = self._ai.list_models()
+                def finish() -> None:
+                    target = self._find_online_player(str(getattr(sender, "name", "") or "")) or sender
+                    text = ", ".join(models[:20]) if models else "未获取到模型"
+                    target.send_message(f"§b可用模型：§r{text}")
+                self.server.scheduler.run_task(self, finish, delay=0)
+            self._ai_executor.submit(list_request)
+            return True
+
+        if action == "clear":
+            self._update_ai_config(base_url="", api_key="", model="")
+            sender.send_message("§aAI 配置已清除。")
             return True
 
         sender.send_error_message("用法：/bot ai-config get|set|test")
@@ -1831,10 +1917,15 @@ class BotPlugin(Plugin):
         return self._is_admin(sender)
 
     def _is_admin(self, sender: CommandSender) -> bool:
+        """OP 或服务器控制台视为管理员。"""
         try:
-            return bool(sender.is_op)
+            is_op = getattr(sender, "is_op", None)
+            if is_op is not None:
+                return bool(is_op)
         except Exception:
-            return False
+            pass
+        # 控制台没有玩家 unique_id/location；允许其管理全局配置。
+        return not hasattr(sender, "unique_id") and not hasattr(sender, "location")
 
     def _find_online_player(self, name: str) -> Any | None:
         for player in self.server.online_players:
@@ -1984,7 +2075,7 @@ class BotPlugin(Plugin):
     @staticmethod
     def _send_usage(sender: CommandSender) -> None:
         sender.send_message(
-            "用法：/bot gui|spawn|remove|list|radius|info|skin|skins|behavior|movehere|clearall|credits，或 /bots\n"
+            "用法：/bot gui|spawn|remove|list|radius|info|skin|skins|behavior|movehere|ai|ai-config|clearall|credits，或 /bots\n"
             "§7提示：玩家直接输入 /bot 可打开 GUI 管理界面。§r"
         )
 

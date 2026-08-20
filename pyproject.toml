@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "endstone-bot"
-version = "3.1.2"
+version = "3.2.0"
 description = "Minecraft 基岩版（BDS）假人管理插件：GUI、两种假人类型（NPC+tickingarea / SimulatedPlayer）、自愈恢复、位置守护、皮肤变体、行为系统。"
 readme = "README.md"
 license = { text = "PolyForm-Noncommercial-1.0.0" }

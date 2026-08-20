@@ -1,129 +1,162 @@
-"""AI 客户端模块。
-
-调用 OpenAI 兼容格式的 LLM API，处理假人 @ai 对话。
-支持 OpenAI / DeepSeek / Claude（通过兼容网关）/ Ollama 等。
-"""
+"""OpenAI 兼容 AI 客户端与结构化动作解析。"""
 
 from __future__ import annotations
 
 import json
 import logging
-import time
-import urllib.request
+import re
 import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
 from typing import Any
-
 
 logger = logging.getLogger(__name__)
 
+ALLOWED_ACTIONS = {
+    "idle", "station", "follow", "movehere", "stop", "say",
+}
+
+
+@dataclass
+class AIResponse:
+    ok: bool
+    reply: str = ""
+    actions: list[dict[str, Any]] = field(default_factory=list)
+    error: str = ""
+
+
+def _extract_json_object(text: str) -> dict[str, Any] | None:
+    """从纯 JSON 或 Markdown 代码块中提取第一个 JSON 对象。"""
+    value = str(text or "").strip()
+    if not value:
+        return None
+    value = re.sub(r"^```(?:json)?\s*", "", value, flags=re.I)
+    value = re.sub(r"\s*```$", "", value)
+    try:
+        data = json.loads(value)
+        return data if isinstance(data, dict) else None
+    except json.JSONDecodeError:
+        pass
+    start = value.find("{")
+    end = value.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            data = json.loads(value[start:end + 1])
+            return data if isinstance(data, dict) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def parse_ai_response(text: str) -> AIResponse:
+    """解析并严格过滤模型返回的 reply/actions。"""
+    data = _extract_json_object(text)
+    if data is None:
+        # 兼容只回复文本的模型，不执行动作。
+        return AIResponse(ok=True, reply=str(text or "").strip()[:200])
+
+    reply = str(data.get("reply", "") or "").strip()[:200]
+    raw_actions = data.get("actions", [])
+    actions: list[dict[str, Any]] = []
+    if isinstance(raw_actions, list):
+        for item in raw_actions[:4]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip().lower()
+            if name not in ALLOWED_ACTIONS:
+                continue
+            args = item.get("args", {})
+            if not isinstance(args, dict):
+                args = {}
+            clean: dict[str, Any] = {}
+            if name == "follow":
+                target = str(args.get("target", "") or "").strip()[:32]
+                if target:
+                    clean["target"] = target
+                else:
+                    continue
+            elif name == "say":
+                message = str(args.get("message", "") or "").strip()[:180]
+                if message:
+                    clean["message"] = message
+                else:
+                    continue
+            actions.append({"name": name, "args": clean})
+    return AIResponse(ok=True, reply=reply, actions=actions)
+
 
 class AIClient:
-    """AI 对话客户端。"""
+    """同步 HTTP 客户端；调用方应在线程池中使用。"""
 
-    def __init__(
-        self,
-        base_url: str = "",
-        api_key: str = "",
-        model: str = "",
-        timeout: float = 30.0,
-    ) -> None:
+    def __init__(self, base_url: str = "", api_key: str = "", model: str = "", timeout: float = 30.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
-        self.timeout = timeout
+        self.timeout = max(3.0, min(120.0, float(timeout)))
 
     def is_configured(self) -> bool:
-        """是否已配置有效的 API。"""
-        if not self.base_url or not self.model:
-            return False
         key = self.api_key.strip()
-        if not key or key.lower() in ("", "xxx", "changeme", "sk-xxx"):
-            return False
-        return True
+        return bool(
+            self.base_url and self.model and key
+            and key.lower() not in {"xxx", "changeme", "sk-xxx"}
+        )
 
-    def chat(
-        self,
-        messages: list[dict[str, str]],
-        temperature: float = 0.7,
-        max_tokens: int = 512,
-    ) -> str:
-        """发送对话请求，返回 AI 回复文本。
-
-        Args:
-            messages: [{"role": "user"/"assistant"/"system", "content": "..."}]
-            temperature: 随机性
-            max_tokens: 最大 token 数
-
-        Returns:
-            AI 回复文本，失败返回错误信息
-        """
+    def chat(self, messages: list[dict[str, str]], temperature: float = 0.3, max_tokens: int = 512) -> AIResponse:
         if not self.is_configured():
-            return "AI 未配置，请管理员在 config.json 中配置 API 地址和 Key。"
-
+            return AIResponse(ok=False, error="AI 未配置")
         url = f"{self.base_url}/chat/completions"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
         payload = {
             "model": self.model,
             "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
+            "temperature": max(0.0, min(2.0, float(temperature))),
+            "max_tokens": max(16, min(4096, int(max_tokens))),
         }
-
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
             url,
-            data=body,
-            headers=headers,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"},
             method="POST",
         )
-
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            try:
-                err_body = json.loads(e.read().decode("utf-8"))
-                err_msg = err_body.get("error", {}).get("message", str(e))
-            except Exception:
-                err_msg = str(e)
-            logger.warning(f"AI API HTTP 错误: {e.code} {err_msg}")
-            return f"AI 请求失败：{err_msg}"
-        except urllib.error.URLError as e:
-            logger.warning(f"AI API 网络错误: {e.reason}")
-            return f"AI 连接失败：{e.reason}"
-        except Exception as e:
-            logger.warning(f"AI API 未知错误: {e}")
-            return f"AI 请求失败：{e}"
-
-        try:
             choices = data.get("choices", [])
             if not choices:
-                return "AI 返回为空"
-            return choices[0].get("message", {}).get("content", "").strip()
-        except Exception as e:
-            logger.warning(f"AI 响应解析错误: {e}")
-            return "AI 响应解析失败"
+                return AIResponse(ok=False, error="模型返回为空")
+            content = choices[0].get("message", {}).get("content", "")
+            result = parse_ai_response(content)
+            if not result.reply and not result.actions:
+                return AIResponse(ok=False, error="模型响应中没有有效内容")
+            return result
+        except urllib.error.HTTPError as exc:
+            try:
+                body = json.loads(exc.read().decode("utf-8"))
+                detail = str(body.get("error", {}).get("message", ""))
+            except Exception:
+                detail = ""
+            logger.warning("AI API HTTP %s: %s", exc.code, detail or exc.reason)
+            return AIResponse(ok=False, error=f"HTTP {exc.code}")
+        except urllib.error.URLError as exc:
+            logger.warning("AI API 网络错误: %s", exc.reason)
+            return AIResponse(ok=False, error="网络连接失败")
+        except TimeoutError:
+            return AIResponse(ok=False, error="请求超时")
+        except Exception as exc:
+            logger.warning("AI API 异常: %s", exc)
+            return AIResponse(ok=False, error="请求异常")
 
     def list_models(self) -> list[str]:
-        """列出可用模型名称。"""
         if not self.base_url:
             return []
-        url = f"{self.base_url}/models"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        req = urllib.request.Request(url, headers=headers, method="GET")
-
+        req = urllib.request.Request(
+            f"{self.base_url}/models",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            method="GET",
+        )
         try:
-            with urllib.request.urlopen(req, timeout=10.0) as resp:
+            with urllib.request.urlopen(req, timeout=min(self.timeout, 15.0)) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-            models = []
-            for m in data.get("data", []):
-                mid = m.get("id", "")
-                if mid:
-                    models.append(mid)
-            return models
-        except Exception as e:
-            logger.warning(f"获取模型列表失败: {e}")
+            return [str(x.get("id")) for x in data.get("data", []) if isinstance(x, dict) and x.get("id")]
+        except Exception as exc:
+            logger.warning("获取模型列表失败: %s", exc)
             return []
