@@ -22,7 +22,7 @@
  */
 
 import { GameTest, Tags } from "@minecraft/server-gametest";
-import { system, world } from "@minecraft/server";
+import { EquipmentSlot, ItemStack, system, world } from "@minecraft/server";
 
 // 活跃的 GameTest 对象（用于 spawnSimulatedPlayer）
 let activeTest = null;
@@ -32,6 +32,10 @@ const simulatedPlayers = new Map();
 
 // 待处理的生成请求队列（GameTest 未就绪时排队）
 const pendingSpawns = [];
+
+// 私人定制运行配置: name -> settings
+const practiceConfigs = new Map();
+const practiceState = new Map();
 
 // 鉴权令牌（从 Endstone 插件的 ping 消息中获取）
 let bridgeToken = "";
@@ -88,6 +92,10 @@ function doSpawnSimulatedPlayer(req) {
 
         if (sim) {
             simulatedPlayers.set(name, sim);
+            try {
+                sim.addTag("yuehua_fake_player");
+                if (req.id) sim.addTag(`yuehua_fake_player_id:${req.id}`);
+            } catch (_) {}
             reply("bot:spawned", { n: name, ok: true });
 
             // 监听玩家离开（SimulatedPlayer 被踢/断开）
@@ -139,6 +147,95 @@ function doTeleportSimulatedPlayer(req) {
     }
 }
 
+function setPracticeConfig(req) {
+    if (!req || !req.n) return;
+    practiceConfigs.set(req.n, {
+        owner: String(req.owner || ""),
+        follow: !!req.follow,
+        randomMove: !!req.randomMove,
+        slowFalling: !!req.slowFalling,
+        fireResistance: !!req.fireResistance,
+        infiniteTotem: !!req.infiniteTotem,
+        armor: ["diamond", "netherite"].includes(req.armor) ? req.armor : "none",
+    });
+    if (!practiceState.has(req.n)) practiceState.set(req.n, { angle: 0, nextMove: 0 });
+}
+
+function findOwner(name) {
+    if (!name) return null;
+    return world.getAllPlayers().find((p) => p.name === name) || null;
+}
+
+function equipItem(sim, slot, typeId, armor = false) {
+    try {
+        const equipment = sim.getComponent("minecraft:equippable");
+        if (!equipment) return;
+        const current = equipment.getEquipment(slot);
+        if (current && current.typeId === typeId) return;
+        const item = new ItemStack(typeId, 1);
+        if (armor) {
+            try {
+                const ench = item.getComponent("minecraft:enchantable");
+                ench?.addEnchantment({ type: "protection", level: 10 });
+                ench?.addEnchantment({ type: "unbreaking", level: 32767 });
+            } catch (_) {}
+        }
+        equipment.setEquipment(slot, item);
+    } catch (_) {}
+}
+
+function maintainEquipment(sim, cfg) {
+    if (cfg.infiniteTotem) {
+        equipItem(sim, EquipmentSlot.Mainhand, "minecraft:totem_of_undying");
+        equipItem(sim, EquipmentSlot.Offhand, "minecraft:totem_of_undying");
+    }
+    if (cfg.armor !== "none") {
+        const p = cfg.armor === "netherite" ? "netherite" : "diamond";
+        equipItem(sim, EquipmentSlot.Head, `minecraft:${p}_helmet`, true);
+        equipItem(sim, EquipmentSlot.Chest, `minecraft:${p}_chestplate`, true);
+        equipItem(sim, EquipmentSlot.Legs, `minecraft:${p}_leggings`, true);
+        equipItem(sim, EquipmentSlot.Feet, `minecraft:${p}_boots`, true);
+    }
+}
+
+function tickPractice(name, sim, cfg, tick) {
+    const owner = findOwner(cfg.owner);
+    const state = practiceState.get(name) || { angle: 0, nextMove: 0 };
+    practiceState.set(name, state);
+    try {
+        if (cfg.slowFalling) sim.addEffect("slow_falling", 240, { amplifier: 1, showParticles: false });
+        if (cfg.fireResistance) sim.addEffect("fire_resistance", 240, { amplifier: 254, showParticles: false });
+    } catch (_) {}
+    maintainEquipment(sim, cfg);
+
+    if (tick < state.nextMove) return;
+    state.nextMove = tick + 10;
+    if (!cfg.follow && !cfg.randomMove) return;
+    state.angle += (Math.random() - 0.5) * 1.2;
+    let center = sim.location;
+    if (cfg.follow && owner) center = owner.location;
+    let x = center.x, y = center.y, z = center.z;
+    if (cfg.randomMove) {
+        x += Math.cos(state.angle) * (1 + Math.random() * 1.5);
+        z += Math.sin(state.angle) * (1 + Math.random() * 1.5);
+    } else if (cfg.follow && owner) {
+        // 保持在玩家身后约 2 格，不使用疾跑速度。
+        const yaw = Number(owner.getRotation()?.y || 0) * Math.PI / 180;
+        x -= Math.sin(yaw) * 2;
+        z += Math.cos(yaw) * 2;
+    }
+    try {
+        const dx = x - sim.location.x, dz = z - sim.location.z;
+        const distanceSq = dx * dx + dz * dz;
+        if (distanceSq > 144) {
+            sim.teleport({ x, y, z }, { dimension: owner?.dimension || sim.dimension });
+        } else if (distanceSq > 0.25) {
+            // GameTest SimulatedPlayer 原生寻路，速度参数 1 对应正常步行而非疾跑。
+            sim.moveToLocation({ x, y, z }, 1);
+        }
+    } catch (_) {}
+}
+
 /**
  * 监听 scriptevent 命令。
  */
@@ -180,6 +277,10 @@ system.afterEvents.scriptEventReceive.subscribe((event) => {
             doTeleportSimulatedPlayer(data);
             break;
 
+        case "bot:practice_config":
+            setPracticeConfig(data);
+            break;
+
         case "bot:list":
             reply("bot:list_result", { names: Array.from(simulatedPlayers.keys()) });
             break;
@@ -193,6 +294,17 @@ system.afterEvents.scriptEventReceive.subscribe((event) => {
  * 每 100 tick：清理失效的模拟玩家 + 上报所有模拟玩家坐标。
  * 坐标上报使 Endstone 侧能持久化 simulated 假人位置（重启后恢复）。
  */
+let practiceTick = 0;
+system.runInterval(() => {
+    practiceTick += 1;
+    for (const [name, sim] of simulatedPlayers) {
+        try {
+            const cfg = practiceConfigs.get(name);
+            if (cfg && sim.isValid) tickPractice(name, sim, cfg, practiceTick);
+        } catch (_) {}
+    }
+}, 1);
+
 system.runInterval(() => {
     if (simulatedPlayers.size === 0) return;
 

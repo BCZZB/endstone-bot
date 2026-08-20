@@ -188,6 +188,14 @@ class FakePlayer:
     # === AI 功能（同 mcbes-manage-script 扩展）===
     ai_enabled: bool = False  # 该假人是否启用 AI 对话
     ai_members: list[str] = field(default_factory=list)  # 允许使用 @ai 的玩家列表
+    # 私人定制分支：pracitse 区域召唤配置
+    practice_managed: bool = False
+    practice_follow: bool = False
+    practice_random_move: bool = False
+    practice_slow_falling: bool = False
+    practice_fire_resistance: bool = False
+    practice_infinite_totem: bool = False
+    practice_armor: str = "none"  # none / diamond / netherite
 
     # === 持久化字段（同月华 IFakePlayer）===
     id: str = ""
@@ -223,6 +231,13 @@ class FakePlayer:
             "behavior": self.behavior.to_dict(),
             "aiEnabled": bool(self.ai_enabled),
             "aiMembers": list(self.ai_members),
+            "practiceManaged": bool(self.practice_managed),
+            "practiceFollow": bool(self.practice_follow),
+            "practiceRandomMove": bool(self.practice_random_move),
+            "practiceSlowFalling": bool(self.practice_slow_falling),
+            "practiceFireResistance": bool(self.practice_fire_resistance),
+            "practiceInfiniteTotem": bool(self.practice_infinite_totem),
+            "practiceArmor": self.practice_armor,
         }
 
     @classmethod
@@ -250,6 +265,13 @@ class FakePlayer:
             behavior=BotBehavior.from_dict(data.get("behavior")),
             ai_enabled=bool(data.get("aiEnabled", False)),
             ai_members=list(data.get("aiMembers", [])) if isinstance(data.get("aiMembers"), list) else [],
+            practice_managed=bool(data.get("practiceManaged", False)),
+            practice_follow=bool(data.get("practiceFollow", False)),
+            practice_random_move=bool(data.get("practiceRandomMove", False)),
+            practice_slow_falling=bool(data.get("practiceSlowFalling", False)),
+            practice_fire_resistance=bool(data.get("practiceFireResistance", False)),
+            practice_infinite_totem=bool(data.get("practiceInfiniteTotem", False)),
+            practice_armor=str(data.get("practiceArmor", "none")) if data.get("practiceArmor") in ("none", "diamond", "netherite") else "none",
         )
 
 

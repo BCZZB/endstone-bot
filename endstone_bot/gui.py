@@ -239,6 +239,66 @@ class BotGUI:
         player.send_form(form)
 
     # ==================================================================
+    # 私人定制 Bot 设置界面
+    # ==================================================================
+
+    def open_practice_menu(self, player: Any, fp: FakePlayer) -> None:
+        form = ActionForm(title="§a§lbot设置界面", content="§e§l请设置你的bot。")
+        form.add_button("§6§l跟随", icon="textures/ui/empty_armor_slot_boots.png", on_click=lambda p: self.open_practice_toggle(p, fp, "follow"))
+        form.add_button("§a§l随机移动", icon="textures/ui/comment.png", on_click=lambda p: self.open_practice_toggle(p, fp, "randomMove"))
+        form.add_button("§l缓降", icon="textures/gui/newgui/mob_effects/levitation_effect.png", on_click=lambda p: self.open_practice_toggle(p, fp, "slowFalling"))
+        form.add_button("§c§l抗火", icon="textures/gui/newgui/mob_effects/fire_resistance_effect.png", on_click=lambda p: self.open_practice_toggle(p, fp, "fireResistance"))
+        form.add_button("§e§l无限图腾", icon="textures/items/totem.png", on_click=lambda p: self.open_practice_toggle(p, fp, "infiniteTotem"))
+        form.add_button("§5§l盔甲", icon="textures/ui/backup_noline.png", on_click=lambda p: self.open_practice_armor(p, fp))
+        player.send_form(form)
+
+    def open_practice_toggle(self, player: Any, fp: FakePlayer, field: str) -> None:
+        mapping = {
+            "follow": ("§6§l跟随", fp.practice_follow),
+            "randomMove": ("§e§l随机移动", fp.practice_random_move),
+            "slowFalling": ("§l缓降", fp.practice_slow_falling),
+            "fireResistance": ("§c§l抗火", fp.practice_fire_resistance),
+            "infiniteTotem": ("§e§l无限图腾", fp.practice_infinite_totem),
+        }
+        title, current = mapping[field]
+        form = ModalForm(
+            title=title,
+            controls=[Label(text="§a请编辑"), Toggle(label="§e§l是否开启？", default_value=current)],
+            submit_button="保存",
+        )
+        def on_submit(p: Any, result: str) -> None:
+            if result is None:
+                return
+            try:
+                data = json.loads(result)
+                enabled = bool(data[-1])
+            except Exception:
+                p.send_message("§c设置保存失败")
+                return
+            if field == "follow":
+                fp.practice_follow = enabled
+                fp.behavior.movement = "follow" if enabled else "idle"
+                fp.behavior.target_player = fp.owner_name if enabled else ""
+            elif field == "randomMove": fp.practice_random_move = enabled
+            elif field == "slowFalling": fp.practice_slow_falling = enabled
+            elif field == "fireResistance": fp.practice_fire_resistance = enabled
+            elif field == "infiniteTotem": fp.practice_infinite_totem = enabled
+            self._plugin._save_practice_fp(fp)
+            p.send_message("§a设置已保存")
+        form.on_submit = on_submit
+        player.send_form(form)
+
+    def open_practice_armor(self, player: Any, fp: FakePlayer) -> None:
+        form = ActionForm(title="§5§l盔甲", content="§a请选择")
+        def choose(p: Any, armor: str) -> None:
+            fp.practice_armor = armor
+            self._plugin._save_practice_fp(fp)
+            p.send_message("§a盔甲设置已保存")
+        form.add_button("§b§l钻石套", on_click=lambda p: choose(p, "diamond"))
+        form.add_button("§i§l合金套", on_click=lambda p: choose(p, "netherite"))
+        player.send_form(form)
+
+    # ==================================================================
     # 皮肤选择（同月华 openLegacyFakePlayerSkinForm）
     # ==================================================================
 

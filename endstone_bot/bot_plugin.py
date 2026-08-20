@@ -121,8 +121,8 @@ class BotPlugin(Plugin):
 
     permissions = {
         "endstone_bot.command": {
-            "description": "允许管理假人。",
-            "default": "op",
+            "description": "允许使用 /bot；私人分支由 pracitse 标签进行区域校验。",
+            "default": True,
         }
     }
 
@@ -153,6 +153,8 @@ class BotPlugin(Plugin):
         # 数据目录与 AI 配置持久化
         self.data_folder.mkdir(parents=True, exist_ok=True)
         self._db_path = self.data_folder / "bots.json"
+        self._practice_config_path = self.data_folder / "practice_profiles.json"
+        self._practice_profiles = self._load_practice_profiles()
         self._ai_config_path = self.data_folder / "ai_config.json"
         self._ai_config = self._load_ai_config()
         self._ai = AIClient(
@@ -208,6 +210,40 @@ class BotPlugin(Plugin):
             "BotPlugin 已启用（同 mcbes-manage-script 逻辑）："
             "两种假人类型 + 伤害拦截 + 自愈 + 位置守护 + 行为系统 + AI 对话。"
         )
+
+    def _load_practice_profiles(self) -> dict[str, dict[str, Any]]:
+        default: dict[str, dict[str, Any]] = {}
+        if not self._practice_config_path.exists():
+            return default
+        try:
+            data = json.loads(self._practice_config_path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else default
+        except Exception as exc:
+            self.logger.warning(f"读取私人 Bot 配置失败: {exc}")
+            return default
+
+    def _save_practice_profiles(self) -> None:
+        try:
+            tmp = self._practice_config_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self._practice_profiles, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self._practice_config_path)
+        except Exception as exc:
+            self.logger.warning(f"保存私人 Bot 配置失败: {exc}")
+
+    @staticmethod
+    def _practice_default_profile() -> dict[str, Any]:
+        return {
+            "follow": False,
+            "randomMove": False,
+            "slowFalling": False,
+            "fireResistance": False,
+            "infiniteTotem": False,
+            "armor": "none",
+        }
+
+    def _practice_profile_key(self, player: Any) -> str:
+        uid = str(getattr(player, "unique_id", "") or "").strip()
+        return uid or str(getattr(player, "name", "") or "").strip().lower()
 
     def _load_ai_config(self) -> dict:
         """从 ai_config.json 加载 AI 配置。"""
@@ -294,10 +330,9 @@ class BotPlugin(Plugin):
         if name != "bot":
             return False
         if not args:
-            # 玩家无参数时打开 GUI，控制台显示用法
+            # 私人定制：/bot 仅对带 pracitse 标签的玩家生效并立即召唤。
             if hasattr(sender, "send_form"):
-                self._gui.open_main_menu(sender)
-                return True
+                return self._cmd_practice_spawn(sender)
             self._send_usage(sender)
             return True
 
@@ -326,6 +361,90 @@ class BotPlugin(Plugin):
             self._send_usage(sender)
             return True
         return handler()
+
+    def _cmd_practice_spawn(self, player: Any) -> bool:
+        try:
+            tags = set(player.scoreboard_tags or [])
+        except Exception:
+            tags = set()
+        if "pracitse" not in tags:
+            player.send_message("§c该指令在此区域已被禁用")
+            return True
+
+        owner_uuid = self._sender_uuid(player)
+        # 每位玩家只保留一个私人定制 Bot；再次召唤先移除旧实例。
+        for old in list(self._bots.values()):
+            if old.practice_managed and old.owner_uuid == owner_uuid:
+                self._remove_managed_player(old)
+                self._bots.pop(old.id, None)
+                self._name_index.pop(old.name.lower(), None)
+
+        profile = self._practice_profiles.get(
+            self._practice_profile_key(player), self._practice_default_profile()
+        )
+        loc = player.location
+        base_name = f"{str(player.name)[:18]}Bot"
+        name = base_name
+        index = 2
+        while name.lower() in self._name_index:
+            name = f"{base_name[:20]}{index}"
+            index += 1
+        fp = FakePlayer(
+            id=generate_id(), name=name,
+            owner_name=str(player.name), owner_uuid=owner_uuid,
+            location_x=round(float(loc.x), 2),
+            location_y=round(float(loc.y), 2),
+            location_z=round(float(loc.z), 2),
+            dimension=self._dimension_id(loc.dimension),
+            created=format_date_time_beijing(), type="simulated",
+            tickingarea_name=f"bot_{name}", practice_managed=True,
+            practice_follow=bool(profile.get("follow", False)),
+            practice_random_move=bool(profile.get("randomMove", False)),
+            practice_slow_falling=bool(profile.get("slowFalling", False)),
+            practice_fire_resistance=bool(profile.get("fireResistance", False)),
+            practice_infinite_totem=bool(profile.get("infiniteTotem", False)),
+            practice_armor=str(profile.get("armor", "none")),
+        )
+        fp.behavior.movement = "follow" if fp.practice_follow else "idle"
+        fp.behavior.target_player = str(player.name) if fp.practice_follow else ""
+        self._bots[fp.id] = fp
+        self._name_index[fp.name.lower()] = fp.id
+        self._save_db()
+        self._spawn_simulated_player(fp)
+        self._send_practice_config(fp)
+        player.send_message("§i下蹲右键以编辑")
+        return True
+
+    def _practice_profile_from_fp(self, fp: FakePlayer) -> dict[str, Any]:
+        return {
+            "follow": fp.practice_follow,
+            "randomMove": fp.practice_random_move,
+            "slowFalling": fp.practice_slow_falling,
+            "fireResistance": fp.practice_fire_resistance,
+            "infiniteTotem": fp.practice_infinite_totem,
+            "armor": fp.practice_armor,
+        }
+
+    def _save_practice_fp(self, fp: FakePlayer) -> None:
+        key = fp.owner_uuid or fp.owner_name.lower()
+        self._practice_profiles[key] = self._practice_profile_from_fp(fp)
+        self._save_practice_profiles()
+        self._save_db()
+        self._send_practice_config(fp)
+
+    def _send_practice_config(self, fp: FakePlayer) -> None:
+        if not fp.practice_managed:
+            return
+        self._send_scriptevent("bot:practice_config", {
+            "n": fp.name,
+            "owner": fp.owner_name,
+            "follow": fp.practice_follow,
+            "randomMove": fp.practice_random_move,
+            "slowFalling": fp.practice_slow_falling,
+            "fireResistance": fp.practice_fire_resistance,
+            "infiniteTotem": fp.practice_infinite_totem,
+            "armor": fp.practice_armor,
+        })
 
     # ------------------------------------------------------------------
     # create() → _cmd_spawn（同月华 create 函数）
@@ -1289,7 +1408,16 @@ class BotPlugin(Plugin):
             player.send_message("§c这个假人的数据不存在。§r")
             return
 
-        # 右键直接打开 GUI 假人管理菜单
+        if fp.practice_managed:
+            if not bool(getattr(player, "is_sneaking", False)):
+                return
+            if not self._can_manage(player, fp):
+                player.send_message("§c你不能编辑其他玩家的 bot。")
+                return
+            self._gui.open_practice_menu(player, fp)
+            return
+
+        # 普通假人右键打开原管理菜单
         self._gui.open_bot_manage(player, fp)
 
     # ------------------------------------------------------------------
@@ -2386,6 +2514,7 @@ class BotPlugin(Plugin):
         """通过行为包生成 SimulatedPlayer。"""
         self._send_scriptevent("bot:spawn", {
             "n": fp.name,
+            "id": fp.id,
             "x": fp.location_x,
             "y": fp.location_y,
             "z": fp.location_z,
