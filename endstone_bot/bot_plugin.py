@@ -38,8 +38,8 @@ from endstone.event import (
     ActorDeathEvent,
     ActorKnockbackEvent,
     ActorRemoveEvent,
-    BeforeChatEvent,
     EventPriority,
+    PlayerChatEvent,
     PlayerInteractActorEvent,
     ScriptMessageEvent,
     event_handler,
@@ -882,7 +882,7 @@ class BotPlugin(Plugin):
     # ------------------------------------------------------------------
 
     @event_handler(priority=EventPriority.HIGHEST)
-    def on_before_chat(self, event: BeforeChatEvent) -> None:
+    def on_player_chat(self, event: PlayerChatEvent) -> None:
         """监听玩家聊天，检测 @假人名字 唤醒 AI 对话。"""
         player = event.player
         message = event.message.strip()
@@ -918,13 +918,18 @@ class BotPlugin(Plugin):
         is_member = player_name.lower() in {n.lower() for n in fp.ai_members}
 
         if not (is_owner or is_member):
-            # 未授权玩家：悄悄忽略（不暴露假人 AI 状态）
+            # 未授权玩家：取消事件，不公开聊天
             event.cancel()
             return
 
         # 权限通过，拦截聊天，交给 AI 处理
         event.cancel()
-        self._handle_ai_mention(fp, player, query)
+        # 用线程处理网络 IO，避免阻塞服务器主线程
+        threading.Thread(
+            target=self._handle_ai_mention,
+            args=(fp, player, query),
+            daemon=True,
+        ).start()
 
     def _handle_ai_mention(
         self, fp: FakePlayer, player: Any, query: str
@@ -974,9 +979,8 @@ class BotPlugin(Plugin):
                 reply = str(reply).strip()[:200]
                 # 去掉可能的 Markdown 符号
                 reply = reply.replace("**", "").replace("*", "").replace("_", "")
-                player.get_server().dispatch_command(
-                    self.server.command_sender,
-                    f"say §b[{fp.name}]§r {reply}",
+                self.server.broadcast_message(
+                    f"§b[{fp.name}]§r {reply}"
                 )
                 self.logger.info(f"[AI] §b{fp.name}§r 回复: {reply}")
             else:
