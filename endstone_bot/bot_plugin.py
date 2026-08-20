@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import math
 import secrets
+import shlex
 import threading
 from pathlib import Path
 from typing import Any
@@ -103,22 +104,9 @@ class BotPlugin(Plugin):
     commands = {
         "bot": {
             "description": "管理假人（同 mcbes-manage-script 逻辑）。",
-            "usages": [
-                "/bot gui",
-                "/bot spawn <name> [type] [skin: 0-15]",
-                "/bot remove <name>",
-                "/bot list",
-                "/bot radius <name> <0-4>",
-                "/bot info <name>",
-                "/bot skin <name> <0-15>",
-                "/bot skins",
-                "/bot behavior <name> <idle|station|follow> [target]",
-                "/bot movehere <name>",
-                "/bot clearall",
-                "/bot credits",
-                "/bot ai <name> on|off|add|remove|list [玩家]",
-                "/bot ai-config get|set <baseUrl> <apiKey> <model>",
-            ],
+            # Endstone 命令语法只接受 <name: type> / [name: type]。
+            # 使用 message 捕获全部子命令，再由 on_command 内部解析。
+            "usages": ["/bot [args: message]"],
             "permissions": ["endstone_bot.command"],
         },
         "bots": {
@@ -159,7 +147,9 @@ class BotPlugin(Plugin):
         self._bridge_token: str = ""  # 行为包鉴权令牌
         self._pong_received: bool = False  # 本轮 ping 是否收到 pong
 
-        # AI 配置持久化
+        # 数据目录与 AI 配置持久化
+        self.data_folder.mkdir(parents=True, exist_ok=True)
+        self._db_path = self.data_folder / "bots.json"
         self._ai_config_path = self.data_folder / "ai_config.json"
         self._ai_config = self._load_ai_config()
         self._ai = AIClient(
@@ -170,53 +160,7 @@ class BotPlugin(Plugin):
         if self._ai.is_configured():
             self.logger.info(f"AI 已配置：{self._ai.model} @ {self._ai.base_url}")
         else:
-            self.logger.info("AI 未配置，假人 @ai 功能不可用。使用 /bot ai-config set 来配置。")
-
-    def _load_ai_config(self) -> dict:
-        """从 ai_config.json 加载 AI 配置。"""
-        path = self._ai_config_path
-        if not path.exists():
-            return {"baseUrl": "", "apiKey": "", "model": ""}
-        try:
-            import json as _json
-            data = _json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                return {"baseUrl": "", "apiKey": "", "model": ""}
-            return {
-                "baseUrl": str(data.get("baseUrl", "")),
-                "apiKey": str(data.get("apiKey", "")),
-                "model": str(data.get("model", "")),
-            }
-        except Exception:
-            return {"baseUrl": "", "apiKey": "", "model": ""}
-
-    def _save_ai_config(self) -> None:
-        """保存 AI 配置到 ai_config.json。"""
-        import json as _json
-        try:
-            tmp = self._ai_config_path.with_suffix(".json.tmp")
-            tmp.write_text(_json.dumps(self._ai_config, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(self._ai_config_path)
-        except Exception as exc:
-            self.logger.warning(f"保存 AI 配置失败: {exc}")
-
-    def _update_ai_config(self, base_url: str = "", api_key: str = "", model: str = "") -> None:
-        """更新 AI 配置并持久化。"""
-        if base_url is not None:
-            self._ai_config["baseUrl"] = base_url.strip()
-        if api_key is not None:
-            self._ai_config["apiKey"] = api_key.strip()
-        if model is not None:
-            self._ai_config["model"] = model.strip()
-        self._ai = AIClient(
-            base_url=self._ai_config.get("baseUrl", ""),
-            api_key=self._ai_config.get("apiKey", ""),
-            model=self._ai_config.get("model", ""),
-        )
-        self._save_ai_config()
-
-        self._db_path = self.data_folder / "bots.json"
-        self.data_folder.mkdir(parents=True, exist_ok=True)
+            self.logger.info("AI 未配置，假人 AI 功能不可用。使用 /bot ai-config set 来配置。")
 
         # 行为包管理：首次启动自动释放行为包 + 开启实验 API
         self._setup_behavior_pack()
@@ -226,7 +170,7 @@ class BotPlugin(Plugin):
         if residual:
             self.logger.info(f"清理了 {residual} 个残留常加载区域。")
 
-        # 从磁盘恢复假人（同月华 ensureAllSpawned 前置：load）
+        # 从磁盘恢复假人
         bots = self._load_db()
         restored = 0
         for fp in bots:
@@ -240,26 +184,66 @@ class BotPlugin(Plugin):
         if restored:
             self.logger.info(f"从磁盘恢复了 {restored} 个假人。")
 
-        # 生成行为包鉴权令牌
         self._bridge_token = secrets.token_hex(16)
-
-        # 从磁盘恢复假人（同月华 ensureAllSpawned）
         self._ensure_all_spawned()
 
-        # 注册定时任务（同月华 system.runInterval + taskScheduler）
         scheduler = self.server.scheduler
         scheduler.run_task(self, self._tick_behaviors, delay=1, period=1)
         scheduler.run_task(self, self._ensure_all_spawned, delay=40, period=40)
         scheduler.run_task(self, self._persist_positions, delay=600, period=600)
-
-        # 周期性 ping 行为包（每 600 tick）：
-        # 1. 检测行为包是否活跃  2. pong 携带玩家列表用于对照自愈
         scheduler.run_task(self, self._ping_behavior_pack, delay=60, period=600)
 
         self.logger.info(
             "BotPlugin 已启用（同 mcbes-manage-script 逻辑）："
-            "两种假人类型 + 伤害拦截 + 自愈 + 位置守护 + 行为系统。"
+            "两种假人类型 + 伤害拦截 + 自愈 + 位置守护 + 行为系统 + AI 对话。"
         )
+
+    def _load_ai_config(self) -> dict:
+        """从 ai_config.json 加载 AI 配置。"""
+        path = self._ai_config_path
+        default = {"baseUrl": "", "apiKey": "", "model": ""}
+        if not path.exists():
+            return default
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return default
+            return {
+                "baseUrl": str(data.get("baseUrl", "")),
+                "apiKey": str(data.get("apiKey", "")),
+                "model": str(data.get("model", "")),
+            }
+        except Exception as exc:
+            self.logger.warning(f"读取 AI 配置失败: {exc}")
+            return default
+
+    def _save_ai_config(self) -> None:
+        """保存 AI 配置到 ai_config.json。"""
+        try:
+            tmp = self._ai_config_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self._ai_config, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self._ai_config_path)
+        except Exception as exc:
+            self.logger.warning(f"保存 AI 配置失败: {exc}")
+
+    def _update_ai_config(
+        self, base_url: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """更新 AI 配置并持久化。"""
+        if base_url is not None:
+            self._ai_config["baseUrl"] = base_url.strip()
+        if api_key is not None:
+            self._ai_config["apiKey"] = api_key.strip()
+        if model is not None:
+            self._ai_config["model"] = model.strip()
+        self._ai = AIClient(
+            base_url=self._ai_config.get("baseUrl", ""),
+            api_key=self._ai_config.get("apiKey", ""),
+            model=self._ai_config.get("model", ""),
+        )
+        self._save_ai_config()
 
     def on_disable(self) -> None:
         # 同月华析构：保存数据
@@ -280,6 +264,13 @@ class BotPlugin(Plugin):
     # ------------------------------------------------------------------
 
     def on_command(self, sender: CommandSender, command: Command, args: list[str]) -> bool:
+        # [args: message] 会把其余命令作为一个字符串传入；统一拆分为 token。
+        if len(args) == 1 and isinstance(args[0], str) and " " in args[0].strip():
+            try:
+                args = shlex.split(args[0])
+            except ValueError:
+                args = args[0].split()
+
         name = command.name.lower()
         if name == "bots":
             return self._cmd_list(sender)

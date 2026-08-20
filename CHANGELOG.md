@@ -5,6 +5,23 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [3.1.2] - 2026-08-20
+
+### 修复
+
+- 修正 Endstone 插件入口点规范：入口组由 `endstone.plugin` 改为 `endstone`，入口名由 `endstone_bot` 改为 `bot`
+- 修正命令注册语法：统一使用 `/bot [args: message]`，避免 `0-15`、`on|off` 等被 Endstone 命令解析器判定为语法错误
+- 修正 `on_enable()` 初始化缩进，确保数据目录、持久化、自愈任务、行为包和 AI 客户端均正常初始化
+- 修正聊天事件为 Endstone 原生 `PlayerChatEvent`
+- AI 网络请求改为后台线程，避免阻塞服务器主线程
+- AI 回复改用 `server.broadcast_message()` 广播
+
+### 实机验证
+
+- Endstone 0.11.9 / BDS 1.26.44.3 / Linux x86_64
+- 控制台确认 `[Bot] Loading bot v3.1.2` 和 `[Bot] Enabling bot v3.1.2`
+- `plugins` 命令返回 `Plugins (1): bot`
+
 ## [3.1.1] - 2026-08-19
 
 ### 新增

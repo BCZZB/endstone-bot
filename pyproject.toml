@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "endstone-bot"
-version = "3.1.1"
+version = "3.1.2"
 description = "Minecraft 基岩版（BDS）假人管理插件：GUI、两种假人类型（NPC+tickingarea / SimulatedPlayer）、自愈恢复、位置守护、皮肤变体、行为系统。"
 readme = "README.md"
 license = { text = "PolyForm-Noncommercial-1.0.0" }
@@ -38,8 +38,8 @@ Issues = "https://github.com/BCZZB/endstone-bot/issues"
 Changelog = "https://github.com/BCZZB/endstone-bot/blob/main/CHANGELOG.md"
 "参考项目: mcbes-manage-script" = "https://github.com/YueHua46/mcbes-manage-script"
 
-[project.entry-points."endstone.plugin"]
-endstone_bot = "endstone_bot:BotPlugin"
+[project.entry-points."endstone"]
+bot = "endstone_bot:BotPlugin"
 
 [tool.setuptools]
 packages = ["endstone_bot"]
