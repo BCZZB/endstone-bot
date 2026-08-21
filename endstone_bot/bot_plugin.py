@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import secrets
@@ -149,6 +150,17 @@ class BotPlugin(Plugin):
         self._pending_sim_removes: set[str] = set()  # B4：失联期间待补发的移除名单
         self._bridge_token: str = ""  # 行为包鉴权令牌
         self._pong_received: bool = False  # 本轮 ping 是否收到 pong
+        # WebSocket 桥接（行为包 <-> 插件）
+        self._ws_port: int = 0
+        self._ws_server: asyncio.AbstractServer | None = None
+        self._ws_connected: threading.Event = threading.Event()
+        self._ws_loop: asyncio.AbstractEventLoop | None = None
+        self._ws_conn = None
+        self._ws_bridge_token: str = secrets.token_hex(16)
+        self._ws_pending: dict[str, list[dict]] = {
+            "spawns": [], "removes": [], "teleports": [],
+            "configs": [],
+        }
 
         # 数据目录与 AI 配置持久化
         self.data_folder.mkdir(parents=True, exist_ok=True)
@@ -208,6 +220,8 @@ class BotPlugin(Plugin):
             "BotPlugin 已启用（同 mcbes-manage-script 逻辑）："
             "两种假人类型 + 伤害拦截 + 自愈 + 位置守护 + 行为系统 + AI 对话。"
         )
+        # 启动 WebSocket 桥接服务
+        self._start_ws_bridge()
 
     def _load_ai_config(self) -> dict:
         """从 ai_config.json 加载 AI 配置。"""
@@ -262,6 +276,7 @@ class BotPlugin(Plugin):
 
     def on_disable(self) -> None:
         # 同月华析构：保存数据
+        self._stop_ws_bridge()
         if hasattr(self, "_ai_executor"):
             self._ai_executor.shutdown(wait=False, cancel_futures=True)
         with self._lock:
@@ -276,6 +291,169 @@ class BotPlugin(Plugin):
             self._bots.clear()
             self._name_index.clear()
 
+    # ==================================================================
+    # WebSocket 桥接（行为包 <-> 插件）
+    # ==================================================================
+
+    def _start_ws_bridge(self) -> None:
+        """启动 WS 服务线程；把端口写入数据目录供行为包读取。"""
+        import socket
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        # 0.11.x 自带 asyncio；websockets 在 venv 里可用
+        try:
+            import websockets  # noqa: F401
+        except Exception:
+            try:
+                import websockets.sync  # noqa: F401
+            except Exception:
+                self.logger.error("缺少 websockets 库，WS 桥接不可用。")
+                return
+        def _run() -> None:
+            try:
+                self._ws_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._ws_loop)
+                self._ws_loop.run_until_complete(self._ws_serve())
+            except Exception as exc:
+                self.logger.debug(f"WS 桥接退出: {exc}")
+        t = threading.Thread(target=_run, name="endstone-bot-ws", daemon=True)
+        t.start()
+        # 等待端口分配完成
+        for _ in range(20):
+            if self._ws_port:
+                break
+            time.sleep(0.1)
+
+    def _stop_ws_bridge(self) -> None:
+        if self._ws_loop and self._ws_server:
+            try:
+                self._ws_loop.call_soon_threadsafe(self._ws_server.close)
+            except Exception:
+                pass
+        self._ws_port = 0
+        self._ws_connected.clear()
+
+    async def _ws_serve(self) -> None:
+        import websockets
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # 固定端口，行为包脚本直接连接
+        sock.bind(("127.0.0.1", 19150))
+        self._ws_port = sock.getsockname()[1]
+        # 端口文件供行为包读取
+        try:
+            port_file = self.data_folder / "bridge" / "ws_port.txt"
+            port_file.parent.mkdir(parents=True, exist_ok=True)
+            port_file.write_text(str(self._ws_port), encoding="utf-8")
+        except Exception:
+            pass
+        sock.close()
+        self.logger.info(f"WS 桥接监听 127.0.0.1:{self._ws_port}")
+
+        async def handler(websocket):
+            self._ws_connected.set()
+            self._ws_conn = websocket
+            self.logger.info("§a行为包已连接（WebSocket）。§r")
+            self._behavior_pack_active = True
+            try:
+                async for raw in websocket:
+                    try:
+                        msg = json.loads(raw)
+                    except Exception:
+                        continue
+                    self._handle_ws_message(msg)
+            finally:
+                self._ws_connected.clear()
+                self._ws_conn = None
+                self.logger.warning("行为包 WebSocket 已断开。")
+
+        try:
+            self._ws_server = await websockets.serve(
+                handler, "127.0.0.1", self._ws_port, ping_interval=20, ping_timeout=60
+            )
+            await self._ws_server.wait_closed()
+        except Exception as exc:
+            self.logger.debug(f"WS serve 异常: {exc}")
+
+    def _handle_ws_message(self, msg: dict) -> None:
+        msg_id = str(msg.get("type", "") or "")
+        data = msg.get("data", {}) or {}
+        if not isinstance(data, dict):
+            return
+        if msg_id == "pong":
+            self._pong_received = True
+            was_active = self._behavior_pack_active
+            self._behavior_pack_active = True
+            if not was_active:
+                self.logger.info("§a行为包已连接（WebSocket）。§r")
+            managed = {str(n).lower() for n in data.get("names", []) if isinstance(n, str)}
+            for fp in list(self._bots.values()):
+                if fp.type == "simulated" and fp.name.lower() not in managed:
+                    fp.sim_spawn_confirmed = False
+            with self._lock:
+                pending = list(self._pending_sim_spawns)
+                self._pending_sim_spawns.clear()
+            for fp in pending:
+                self._spawn_simulated_player(fp)
+            if self._pending_sim_removes:
+                for name in list(self._pending_sim_removes):
+                    self._ws_pending["removes"].append({"n": name})
+                self._pending_sim_removes.clear()
+        elif msg_id == "spawned":
+            name = str(data.get("n", ""))
+            ok = bool(data.get("ok", False))
+            fp = self._get_by_name(name)
+            if fp is not None:
+                fp.sim_spawn_confirmed = ok
+        elif msg_id == "positions":
+            entries = data.get("p", [])
+            if isinstance(entries, list):
+                for item in entries:
+                    if not isinstance(item, dict):
+                        continue
+                    fp = self._get_by_name(str(item.get("n", "")))
+                    if fp is None or fp.type != "simulated":
+                        continue
+                    try:
+                        fp.sim_actual_x = round(float(item.get("x", fp.sim_actual_x)), 2)
+                        fp.sim_actual_y = round(float(item.get("y", fp.sim_actual_y)), 2)
+                        fp.sim_actual_z = round(float(item.get("z", fp.sim_actual_z)), 2)
+                        fp.sim_has_position = True
+                        if fp.behavior.movement != "idle":
+                            fp.location_x = fp.sim_actual_x
+                            fp.location_y = fp.sim_actual_y
+                            fp.location_z = fp.sim_actual_z
+                        fp.dimension = str(item.get("d", fp.dimension)) or fp.dimension
+                        self._db_dirty = True
+                    except (TypeError, ValueError):
+                        continue
+        elif msg_id == "removed":
+            self.logger.info(f"模拟玩家 §b{data.get('n', '')}§r 已移除。")
+        elif msg_id == "error":
+            self.logger.warning(f"行为包错误 [{data.get('n', '')}]: {data.get('e', '')}")
+        elif msg_id == "list_result":
+            self.logger.info(f"行为包管理的模拟玩家: {', '.join(str(x) for x in data.get('names', []))}")
+
+    def _send_ws(self, msg: dict) -> bool:
+        """发送消息到 WebSocket（当前行为包连接）。"""
+        if not self._ws_connected.is_set() or not self._ws_loop:
+            return False
+        try:
+            raw = json.dumps(msg, ensure_ascii=False)
+            self._ws_loop.call_soon_threadsafe(self._ws_send_async, raw)
+            return True
+        except Exception:
+            return False
+
+    async def _ws_send_async(self, raw: str) -> None:
+        # 简化：通过注册的发送队列发送；如有连接对象可改进
+        if hasattr(self, "_ws_conn") and self._ws_conn is not None:
+            try:
+                await self._ws_conn.send(raw)
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # 命令入口
     # ------------------------------------------------------------------
     # 命令入口
     # ------------------------------------------------------------------
@@ -1670,13 +1848,12 @@ class BotPlugin(Plugin):
     def _teleport_simulated_player(
         self, fp: FakePlayer, x: float, y: float, z: float
     ) -> None:
-        """通过行为包传送 simulated 假人。"""
-        self._send_scriptevent("bot:teleport", {
-            "n": fp.name,
-            "x": round(float(x), 2),
-            "y": round(float(y), 2),
-            "z": round(float(z), 2),
-            "d": fp.dimension,
+        """通过行为包传送 simulated 假人（WS 优先，scriptevent 回退）。"""
+        self._send_bridge({
+            "type": "teleport",
+            "data": {"n": fp.name, "x": round(float(x), 2),
+                     "y": round(float(y), 2), "z": round(float(z), 2),
+                     "d": fp.dimension},
         })
 
     def _handle_station(self, fp: FakePlayer, behavior: BotBehavior) -> None:
@@ -2263,6 +2440,28 @@ class BotPlugin(Plugin):
         command = f"scriptevent {event_id} {msg}"
         return self._dispatch(command)
 
+    def _send_bridge(self, msg: dict) -> bool:
+        """优先通过 WebSocket 发送；不可用时退回 scriptevent。"""
+        if self._send_ws(msg):
+            return True
+        msg_id = msg.get("type", "")
+        data = msg.get("data", {}) or {}
+        script_map = {
+            "spawn": "bot:spawn", "remove": "bot:remove", "teleport": "bot:teleport",
+            "practice_config": "bot:practice_config",
+        }
+        if msg_id in script_map:
+            return self._send_scriptevent(script_map[msg_id], data)
+        return False
+
+    def _spawn_simulated_player(self, fp: FakePlayer) -> None:
+        """通过行为包生成 SimulatedPlayer（WS 优先，scriptevent 回退）。"""
+        self._send_bridge({
+            "type": "spawn",
+            "data": {"n": fp.name, "id": fp.id, "x": fp.location_x,
+                     "y": fp.location_y, "z": fp.location_z, "d": fp.dimension},
+        })
+
     def _ping_behavior_pack(self) -> None:
         """周期性 ping 行为包：检测活跃状态 + 对照管理的玩家列表。"""
         self._pong_received = False
@@ -2407,26 +2606,9 @@ class BotPlugin(Plugin):
             names = data.get("names", [])
             self.logger.info(f"行为包管理的模拟玩家: {', '.join(names)}")
 
-    def _spawn_simulated_player(self, fp: FakePlayer) -> None:
-        """通过行为包生成 SimulatedPlayer。"""
-        self._send_scriptevent("bot:spawn", {
-            "n": fp.name,
-            "x": fp.location_x,
-            "y": fp.location_y,
-            "z": fp.location_z,
-            "d": fp.dimension,
-        })
-
     def _remove_simulated_player(self, fp: FakePlayer) -> None:
-        """通过行为包移除 SimulatedPlayer。
-
-        行为包失联时记入待移除名单，恢复连接后（pong 分支）补发，
-        避免行为包侧残留"幽灵玩家"。
-        """
-        if self._behavior_pack_active:
-            self._send_scriptevent("bot:remove", {"n": fp.name})
-            self._pending_sim_removes.discard(fp.name)
-        else:
+        """通过行为包移除 SimulatedPlayer（WS 优先，scriptevent 回退）。"""
+        if not self._send_bridge({"type": "remove", "data": {"n": fp.name}}):
             self._pending_sim_removes.add(fp.name)
         fp.actor = None
         fp.entity_id = ""
