@@ -193,6 +193,14 @@ system.afterEvents.scriptEventReceive.subscribe((event) => {
 });
 
 /**
+ * 行为包心跳：每 100 tick（5 秒）无条件向 Endstone 发送 pong，
+ * 让插件通过时间戳判定行为包活性，消除"行为包未响应"误报。
+ */
+system.runInterval(() => {
+    reply("bot:pong", { names: Array.from(simulatedPlayers.keys()) });
+}, 100);
+
+/**
  * 每 100 tick：清理失效的模拟玩家 + 上报所有模拟玩家坐标。
  * 坐标上报使 Endstone 侧能持久化 simulated 假人位置（重启后恢复）。
  */

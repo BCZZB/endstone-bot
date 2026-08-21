@@ -150,6 +150,7 @@ class BotPlugin(Plugin):
         self._pending_sim_removes: set[str] = set()  # B4：失联期间待补发的移除名单
         self._bridge_token: str = ""  # 行为包鉴权令牌
         self._pong_received: bool = False  # 本轮 ping 是否收到 pong
+        self._last_pong_at: float = -999.0  # 最近一次收到 pong 的时间戳（时间戳判定活性，初始负值避免首次误报）
         # 行为包使用 scriptevent 双向通信
 
         # 数据目录与 AI 配置持久化
@@ -2291,14 +2292,18 @@ class BotPlugin(Plugin):
         """周期性 ping 行为包：检测活跃状态 + 对照管理的玩家列表。"""
         self._pong_received = False
         self._send_scriptevent("bot:ping", {})
-        # 5 秒后检查响应
+        # 15 秒后检查响应（行为包心跳 5 秒一次，15 秒未收到即判定失联）
         self.server.scheduler.run_task(
-            self, self._check_ping_response, delay=100
+            self, self._check_ping_response, delay=300
         )
 
     def _check_ping_response(self) -> None:
-        """检查 ping 响应：失联时重置确认状态以便恢复后重新生成。"""
-        if self._pong_received:
+        """检查行为包活性：最近 20 秒内是否收到过 pong（心跳）。"""
+        if self._last_pong_at < 0:
+            # 首次启动，尚未收到任何 pong，等待下一轮
+            return
+        if time.monotonic() - self._last_pong_at < 20.0:
+            # 行为包仍然活跃，无需告警
             return
         if self._behavior_pack_active:
             self._behavior_pack_active = False
@@ -2350,6 +2355,7 @@ class BotPlugin(Plugin):
 
         if msg_id == "bot:pong":
             self._pong_received = True
+            self._last_pong_at = time.monotonic()
             was_active = self._behavior_pack_active
             self._behavior_pack_active = True
             if not was_active:
