@@ -5,6 +5,15 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [3.2.3] - 2026-08-21
+
+### 修复
+
+- 移除 WebSocket/HTTP 实验性通信代码，恢复纯净的 scriptevent 双向通信
+- 修复行为包脚本 `action` 变量未定义问题，导致 scriptevent 收到但不处理
+- 修复 `GameTest.register` → `register`（BDS 1.26.40+ API）
+- 实机验证 scriptevent 双向通信正常工作（bot:ping → bot:pong）
+
 ## [3.2.2] - 2026-08-21
 
 ### 修复

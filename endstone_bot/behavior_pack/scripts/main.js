@@ -36,57 +36,6 @@ const pendingSpawns = [];
 // 鉴权令牌（从 Endstone 插件的 ping 消息中获取）
 let bridgeToken = "";
 
-// WebSocket 连接（优先通信通道，scriptevent 作为回退）
-let ws = null;
-let wsReconnectDelay = 40; // ticks
-let wsTickCounter = 0;
-const WS_URL = "ws://127.0.0.1:19150";
-
-function wsSend(obj) {
-    if (ws && ws.readyState === 1) {
-        try { ws.send(JSON.stringify(obj)); } catch (_) {}
-    }
-}
-
-function wsConnect() {
-    try {
-        ws = new WebSocket(WS_URL);
-        ws.onopen = () => {
-            console.log("[EndstoneBot] WebSocket 已连接");
-            reply("bot:pong", { names: Array.from(simulatedPlayers.keys()) });
-            wsSend({ type: "pong", data: { names: Array.from(simulatedPlayers.keys()), t: bridgeToken } });
-        };
-        ws.onmessage = (ev) => {
-            try { handleWsMessage(JSON.parse(ev.data)); } catch (_) {}
-        };
-        ws.onclose = () => {
-            console.warn("[EndstoneBot] WebSocket 断开，将重连");
-            ws = null;
-        };
-        ws.onerror = () => { try { ws.close(); } catch (_) {} };
-    } catch (e) {
-        ws = null;
-    }
-}
-
-function handleWsMessage(msg) {
-    const action = msg && msg.type;
-    const data = msg && msg.data;
-    if (!action || !data) return;
-    if (data.t) bridgeToken = data.t;
-    if (action === "spawn") {
-        doSpawnSimulatedPlayer({ n: data.n, id: data.id, x: data.x, y: data.y, z: data.z, d: data.d, t: data.t });
-    } else if (action === "remove") {
-        doRemoveSimulatedPlayer(data.n);
-    } else if (action === "teleport") {
-        doTeleportSimulatedPlayer({ n: data.n, x: data.x, y: data.y, z: data.z, d: data.d });
-    } else if (action === "practice_config") {
-        setPracticeConfig({ n: data.n, owner: data.owner, follow: data.follow,
-            randomMove: data.randomMove, slowFalling: data.slowFalling,
-            fireResistance: data.fireResistance, infiniteTotem: data.infiniteTotem, armor: data.armor });
-    }
-}
-
 /**
  * 发送 scriptevent 回复给 Endstone（携带鉴权令牌）。
  */
@@ -273,22 +222,10 @@ system.runInterval(() => {
 
     // 未完成鉴权握手（Endstone 尚未 ping）时不上报，避免无效消息
     if (report.length > 0 && bridgeToken) {
-        // WS 已连接时走 WS，否则退回到 scriptevent
-        wsSend({ type: "positions", data: { p: report, t: bridgeToken } });
         reply("bot:positions", { p: report });
     }
 }, 100);
 
 console.log("[EndstoneBot] 假人桥接行为包已加载");
 
-// WS 连接重试
-system.runInterval(() => {
-    wsTickCounter++;
-    if (!ws || ws.readyState !== 1) {
-        if (wsTickCounter % wsReconnectDelay === 0) {
-            wsConnect();
-        }
-    } else {
-        // 已连接：定期用 WS 上报位置（原 scriptevent runInterval 也会走）
-    }
-}, 1);
+
