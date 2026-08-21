@@ -10,14 +10,20 @@
 /tag 玩家名 add pracitse
 ```
 
-玩家输入 `/bot`：
+带标签玩家使用：
 
-- 无 `pracitse`：提示 `§c该指令在此区域已被禁用`
+```text
+/bot spawn 名字
+/bot remove 名字
+```
+
+- 无标签：提示 `§c该指令在此区域已被禁用`
 - 有标签：在当前位置生成专属 SimulatedPlayer Bot
 - 提示：`§i下蹲右键以编辑`
-- 同一玩家再次召唤时替换旧 Bot，并继承上次配置
+- 同一玩家再次召唤/再次同名时替换旧 Bot，并继承上次配置
+- 实现中 `_cmd_spawn` / `_cmd_remove` 自动识别 `pracitse` 标签并走私人模式
 
-原管理 GUI 仍可通过 `/bot gui` 打开。
+普通玩家和管理员仍使用原有 `/bot spawn` / `/bot remove` 模式。
 
 ## 下蹲右键设置
 

@@ -330,9 +330,10 @@ class BotPlugin(Plugin):
         if name != "bot":
             return False
         if not args:
-            # 私人定制：/bot 仅对带 pracitse 标签的玩家生效并立即召唤。
+            # 玩家无参数时打开 GUI，控制台显示用法
             if hasattr(sender, "send_form"):
-                return self._cmd_practice_spawn(sender)
+                self._gui.open_main_menu(sender)
+                return True
             self._send_usage(sender)
             return True
 
@@ -362,7 +363,7 @@ class BotPlugin(Plugin):
             return True
         return handler()
 
-    def _cmd_practice_spawn(self, player: Any) -> bool:
+    def _practice_spawn(self, player: Any, name_arg: str) -> bool:
         try:
             tags = set(player.scoreboard_tags or [])
         except Exception:
@@ -372,6 +373,13 @@ class BotPlugin(Plugin):
             return True
 
         owner_uuid = self._sender_uuid(player)
+        # 名称校验
+        online_names = {p.name for p in self.server.online_players}
+        error = validate_name(name_arg, set(self._name_index.keys()), online_names)
+        if error:
+            player.send_error_message(error)
+            return True
+        name = name_arg.strip()
         # 每位玩家只保留一个私人定制 Bot；再次召唤先移除旧实例。
         for old in list(self._bots.values()):
             if old.practice_managed and old.owner_uuid == owner_uuid:
@@ -383,12 +391,6 @@ class BotPlugin(Plugin):
             self._practice_profile_key(player), self._practice_default_profile()
         )
         loc = player.location
-        base_name = f"{str(player.name)[:18]}Bot"
-        name = base_name
-        index = 2
-        while name.lower() in self._name_index:
-            name = f"{base_name[:20]}{index}"
-            index += 1
         fp = FakePlayer(
             id=generate_id(), name=name,
             owner_name=str(player.name), owner_uuid=owner_uuid,
@@ -454,6 +456,15 @@ class BotPlugin(Plugin):
         if not args:
             sender.send_error_message("用法：/bot spawn <名字> [类型] [皮肤 0-15]")
             return True
+
+        # 私人定制分支：带 pracitse 标签的玩家使用私人 Bot 模式
+        if hasattr(sender, "scoreboard_tags"):
+            try:
+                tags = set(sender.scoreboard_tags or [])
+            except Exception:
+                tags = set()
+            if "pracitse" in tags:
+                return self._practice_spawn(sender, args[0])
 
         raw_name = args[0]
         # 名称校验（同月华 validateName）
@@ -557,6 +568,28 @@ class BotPlugin(Plugin):
         if not args:
             sender.send_error_message("用法：/bot remove <名字>")
             return True
+        # 私人定制：带 pracitse 标签时只允许删除自己的私人 Bot
+        if hasattr(sender, "scoreboard_tags"):
+            try:
+                tags = set(sender.scoreboard_tags or [])
+            except Exception:
+                tags = set()
+            if "pracitse" in tags:
+                name = args[0]
+                fp = self._get_by_name(name)
+                if fp is None or not fp.practice_managed:
+                    sender.send_error_message("假人不存在。")
+                    return True
+                if not self._can_manage(sender, fp):
+                    sender.send_error_message("无权删除该假人。")
+                    return True
+                self._remove_managed_player(fp)
+                self._bots.pop(fp.id, None)
+                self._name_index.pop(fp.name.lower(), None)
+                self._save_db()
+                sender.send_message(f"已删除私人 Bot §b{name}§r。")
+                return True
+
         name = args[0]
         fp = self._get_by_name(name)
         if fp is None:
