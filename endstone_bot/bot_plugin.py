@@ -2309,8 +2309,10 @@ class BotPlugin(Plugin):
         """从 whl 包数据释放行为包文件。
 
         目标目录已有同版本行为包时跳过，避免覆盖玩家手动改动。
+        若内置散文件存在则直接复制；否则回退从 .mcpack 解压。
         """
         import shutil
+        import zipfile
 
         source_dir = Path(__file__).parent / "behavior_pack"
         if not source_dir.exists():
@@ -2334,15 +2336,29 @@ class BotPlugin(Plugin):
 
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        # 复制所有文件
-        for item in source_dir.rglob("*"):
-            if item.is_file():
-                rel = item.relative_to(source_dir)
-                dst = target_dir / rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(item, dst)
+        # 内置散文件存在 → 直接复制（官方推荐目录形式）
+        if (source_dir / "manifest.json").exists():
+            for item in source_dir.rglob("*"):
+                if item.is_file() and item.suffix != ".mcpack":
+                    rel = item.relative_to(source_dir)
+                    dst = target_dir / rel
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(item, dst)
+            self.logger.info(f"行为包已释放到 {target_dir}")
+            return
 
-        self.logger.info(f"行为包已释放到 {target_dir}")
+        # 回退：从 .mcpack 压缩包解压
+        mcpack = source_dir / "endstone_bot_bridge.mcpack"
+        if mcpack.exists():
+            try:
+                with zipfile.ZipFile(mcpack) as zf:
+                    zf.extractall(target_dir)
+                self.logger.info(f"已从 {mcpack.name} 解压行为包到 {target_dir}")
+                return
+            except Exception as exc:
+                self.logger.error(f"从 mcpack 解压失败: {exc}")
+
+        self.logger.error("找不到可用的行为包文件（散文件或 mcpack）。")
 
     def _register_in_world_packs(self, world_dir: Path) -> None:
         """在 world_behavior_packs.json 中注册行为包。
