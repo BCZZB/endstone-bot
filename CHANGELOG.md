@@ -5,6 +5,21 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [3.2.1] - 2026-08-21
+
+### 新增
+
+- 行为包同时以散文件和 `.mcpack` 两种形式随 wheel 分发
+- `_extract_behavior_pack()` 支持从 `.mcpack` 回退解压：
+  - 内置散文件存在则直接复制（官方推荐目录形式）
+  - 散文件缺失时自动从 `endstone_bot_bridge.mcpack` 解压到世界行为包目录
+- 版本一致时跳过释放，避免覆盖玩家手动改动
+
+### 兼容性
+
+- 兼容 Endstone 0.11.x（0.11.3 及以上）与 BDS 1.26.x
+- 行为包注册格式保持 `world_behavior_packs.json` 官方规范
+
 ## [3.2.0] - 2026-08-20
 
 ### 新增
