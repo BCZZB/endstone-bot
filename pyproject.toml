@@ -49,4 +49,5 @@ endstone_bot = [
     "behavior_pack/manifest.json",
     "behavior_pack/scripts/*.js",
     "behavior_pack/structures/**/*.mcstructure",
+    "behavior_pack/endstone_bot_bridge.mcpack",
 ]
