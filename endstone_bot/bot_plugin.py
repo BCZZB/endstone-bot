@@ -59,13 +59,11 @@ from endstone_bot.models import (
     FAKE_PLAYER_TAG,
     FOLLOW_OFFSET_DISTANCE,
     FOLLOW_TELEPORT_DISTANCE_SQ,
-    LEGACY_ENTITY_TYPE,
     POSITION_GUARD_DISTANCE_SQ,
     SKINS,
     STATION_THRESHOLD_SQ,
     TAG_ID_PREFIX,
     TAG_OWNER_PREFIX,
-    TAG_SKIN_PREFIX,
     BotBehavior,
     FakePlayer,
     build_fake_player_name_tag,
@@ -352,17 +350,11 @@ class BotPlugin(Plugin):
 
         name = raw_name.strip()
 
-        # 确定类型
-        input_type = args[1].lower() if len(args) >= 2 else "entity"
-        if input_type not in ("entity", "simulated"):
-            sender.send_error_message(f"未知假人类型：{input_type}，可用：entity, simulated")
-            return True
-
-        # simulated 类型需要行为包支持
-        if input_type == "simulated" and not self._behavior_pack_active:
-            sender.send_message("§e行为包尚未就绪，自动降级为旧版实体假人。§r")
-            input_type = "entity"
-        fp_type = input_type
+        # 仅支持 simulated 类型（真人玩家假人）
+        input_type = args[1].lower() if len(args) >= 2 else "simulated"
+        if input_type != "simulated":
+            sender.send_message("§e仅支持 simulated 类型，创建模拟玩家假人。§r")
+        fp_type = "simulated"
 
         # 皮肤
         skin_id = 0
@@ -406,31 +398,12 @@ class BotPlugin(Plugin):
         self._bots[fp.id] = fp
         self._name_index[fp.name.lower()] = fp.id
 
-        # 生成实体（同月华 spawnForType）
-        if fp_type == "simulated":
-            # 通过行为包生成 SimulatedPlayer
-            self._spawn_simulated_player(fp)
-            sender.send_message(
-                f"已创建模拟假人 §b{name}§r（所有者：{owner}），"
-                f"正在通过行为包生成..."
-            )
-        else:
-            actor = self._spawn_legacy_entity(fp, location.dimension)
-            if actor is None:
-                # 生成失败：回滚注册
-                self._bots.pop(fp.id, None)
-                self._name_index.pop(fp.name.lower(), None)
-                sender.send_error_message("创建假人失败，请确认当前区块已加载。")
-                return True
-            fp.actor = actor
-            fp.entity_id = self._actor_id(actor)
-            self._prepare_legacy_entity(fp)
-            self._update_tickingarea(fp)
-            skin_name = get_skin_name(skin_id)
-            sender.send_message(
-                f"已创建假人 §b{name}§r（所有者：{owner}，类型：{fp_type}），"
-                f"皮肤：{skin_name}(#{skin_id})。"
-            )
+        # 生成实体（仅 simulated）
+        self._spawn_simulated_player(fp)
+        sender.send_message(
+            f"已创建模拟假人 §b{name}§r（所有者：{owner}），"
+            f"正在通过行为包生成，请稍候... 提示：§i下蹲右键以编辑"
+        )
 
         # 持久化
         self._save_db()
@@ -600,9 +573,6 @@ class BotPlugin(Plugin):
         if not self._can_manage(sender, fp):
             sender.send_error_message("无权修改该假人。")
             return True
-        if fp.type != "entity":
-            sender.send_error_message("新版模拟玩家不支持二次元皮肤。")
-            return True
         try:
             skin_id = int(args[1])
         except ValueError:
@@ -610,8 +580,6 @@ class BotPlugin(Plugin):
             return True
         skin_id = normalize_skin_id(skin_id)
         fp.skin_id = skin_id
-        # 同月华 applyLegacySkin：触发皮肤切换
-        self._apply_legacy_skin(fp)
         self._save_db()
         skin_name = get_skin_name(skin_id)
         sender.send_message(f"已把 §b{fp.name}§r 的皮肤设为 {skin_name}(#{skin_id})。")
@@ -718,27 +686,8 @@ class BotPlugin(Plugin):
         self._save_db()
 
         # 重新生成
-        if fp.type == "simulated":
-            # simulated 类型：通过行为包重新生成
-            self._spawn_simulated_player(fp)
-            sender.send_message(f"已将模拟假人 §b{fp.name}§r 移动到你当前位置。")
-            return True
-
-        dimension = self._get_dimension(fp.dimension)
-        if dimension is not None:
-            actor = self._spawn_legacy_entity(fp, dimension)
-            if actor is not None:
-                fp.actor = actor
-                fp.entity_id = self._actor_id(actor)
-                self._prepare_legacy_entity(fp)
-                self._update_tickingarea(fp)
-                self._save_db()
-                sender.send_message(f"已将假人 §b{fp.name}§r 移动到你当前位置。")
-                return True
-
-        sender.send_message(
-            "§e新位置所在区块未加载，数据已保存，稍后会自动生成。§r"
-        )
+        self._spawn_simulated_player(fp)
+        sender.send_message(f"已将模拟假人 §b{fp.name}§r 移动到你当前位置。")
         return True
 
     # ------------------------------------------------------------------
@@ -787,7 +736,7 @@ class BotPlugin(Plugin):
 
     def _gui_spawn(self, player: Any, name: str, skin_id: int) -> None:
         """GUI 创建假人。"""
-        args = [name, "entity", str(skin_id)]
+        args = [name, "simulated", str(skin_id)]
         self._cmd_spawn(player, args)
 
     def _gui_set_skin(self, player: Any, fp: FakePlayer, skin_id: int) -> None:
@@ -796,7 +745,6 @@ class BotPlugin(Plugin):
             player.send_message("§c你没有权限管理该假人。§r")
             return
         fp.skin_id = normalize_skin_id(skin_id)
-        self._apply_legacy_skin(fp)
         self._save_db()
         skin_name = get_skin_name(fp.skin_id)
         player.send_message(f"已把 §b{fp.name}§r 的皮肤设为 {skin_name}(#{fp.skin_id})。§r")
@@ -1378,45 +1326,14 @@ class BotPlugin(Plugin):
             # simulated 类型：通过行为包重新生成
             if fp.type == "simulated":
                 if not self._behavior_pack_active:
-                    # 行为包未就绪，加入待处理队列
                     if fp not in self._pending_sim_spawns:
                         self._pending_sim_spawns.append(fp)
                     continue
                 if fp.sim_spawn_confirmed:
-                    # 行为包已确认生成，不再重发
                     continue
-                # 未确认：重发生成命令，行为包同名会幂等跳过
-                self.logger.info(f"模拟假人 §b{fp.name}§r 未确认生成，重发生成命令...")
+                self.logger.info(f"模拟假人 §b{fp.name}§r 未确认生成，重发...")
                 self._spawn_simulated_player(fp)
                 continue
-
-            # entity 类型：检测实体是否失效
-            if self._is_actor_valid(fp.actor):
-                continue
-            self.logger.info(f"假人 {fp.name} 实体失效，尝试自愈...")
-            fp.actor = None
-            fp.entity_id = ""
-            fp.last_area_key = None
-
-            dimension = self._get_dimension(fp.dimension)
-            if dimension is None:
-                self.logger.warning(
-                    f"假人 {fp.name} 自愈失败：维度 {fp.dimension} 不可用。"
-                )
-                continue
-
-            actor = self._spawn_legacy_entity(fp, dimension)
-            if actor is not None:
-                fp.actor = actor
-                fp.entity_id = self._actor_id(actor)
-                self._prepare_legacy_entity(fp)
-                self._update_tickingarea(fp)
-                self._save_db()
-                self.logger.info(f"假人 {fp.name} 自愈成功。")
-            else:
-                self.logger.warning(
-                    f"假人 {fp.name} 自愈失败，所在区块可能未加载。"
-                )
 
     # ------------------------------------------------------------------
     # 持久化位置同步
@@ -1463,82 +1380,12 @@ class BotPlugin(Plugin):
     # ==================================================================
 
     # ------------------------------------------------------------------
-    # spawnLegacyEntity() → _spawn_legacy_entity（同月华生成旧版实体）
-    # ------------------------------------------------------------------
-
-    def _spawn_legacy_entity(self, fp: FakePlayer, dimension: Any) -> Any:
-        """同月华 spawnLegacyEntity：在存储坐标处生成实体。"""
-        try:
-            loc = Location(dimension, fp.location_x, fp.location_y, fp.location_z)
-            actor = dimension.spawn_actor(loc, LEGACY_ENTITY_TYPE)
-            return actor
-        except Exception as exc:
-            self.logger.debug(f"生成假人实体失败 {fp.name}: {exc}")
-            return None
-
-    # ------------------------------------------------------------------
-    # prepareLegacyEntity() → _prepare_legacy_entity（同月华绑定元数据）
-    # ------------------------------------------------------------------
-
-    def _prepare_legacy_entity(self, fp: FakePlayer) -> None:
-        """同月华 prepareLegacyEntity：设置 nameTag、tag、皮肤、位置。"""
-        actor = fp.actor
-        if actor is None:
-            return
-        try:
-            # 同月华 buildFakePlayerNameTag
-            actor.name_tag = build_fake_player_name_tag(fp)
-            actor.is_name_tag_visible = True
-            actor.is_name_tag_always_visible = True
-            # 同月华 addTag
-            actor.add_scoreboard_tag(FAKE_PLAYER_TAG)
-            actor.add_scoreboard_tag(f"{TAG_ID_PREFIX}{fp.id}")
-            actor.add_scoreboard_tag(f"{TAG_OWNER_PREFIX}{fp.owner_name}")
-        except Exception:
-            pass
-        # 同月华 applyLegacySkin
-        self._apply_legacy_skin(fp)
-
-    # ------------------------------------------------------------------
-    # applyLegacySkin() → _apply_legacy_skin（同月华触发皮肤事件）
-    # ------------------------------------------------------------------
-
-    def _apply_legacy_skin(self, fp: FakePlayer) -> None:
-        """同月华 applyLegacySkin：通过 tag 标记皮肤变体。"""
-        actor = fp.actor
-        if actor is None:
-            return
-        try:
-            # 移除旧 skin tag
-            for tag in list(actor.scoreboard_tags or []):
-                if tag.startswith(TAG_SKIN_PREFIX):
-                    actor.remove_scoreboard_tag(tag)
-            # 添加新 skin tag（同月华 yuehua:set_skin_{id}）
-            actor.add_scoreboard_tag(f"{TAG_SKIN_PREFIX}{fp.skin_id}")
-        except Exception:
-            pass
-
-    # ------------------------------------------------------------------
     # removeManagedPlayer() → _remove_managed_player（同月华移除实体）
     # ------------------------------------------------------------------
 
     def _remove_managed_player(self, fp: FakePlayer) -> None:
-        """同月华 removeManagedPlayer：移除实体 + tickingarea。"""
-        # simulated 类型：通过行为包移除
-        if fp.type == "simulated":
-            self._remove_simulated_player(fp)
-            return
-
-        # entity 类型：移除 NPC + tickingarea
-        self._remove_tickingarea(fp)
-        if self._is_actor_valid(fp.actor):
-            try:
-                fp.actor.remove()
-            except Exception as exc:
-                self.logger.debug(f"移除假人实体失败 {fp.name}: {exc}")
-        fp.actor = None
-        fp.entity_id = ""
-        fp.last_area_key = None
+        """移除假人实体。"""
+        self._remove_simulated_player(fp)
 
     # ------------------------------------------------------------------
     # guardPosition() → _guard_position（同月华位置守护）
