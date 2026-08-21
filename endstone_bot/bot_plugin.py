@@ -2084,23 +2084,32 @@ class BotPlugin(Plugin):
     # ==================================================================
 
     def _find_world_dir(self) -> Path | None:
-        """查找当前世界目录。"""
-        # 尝试通过 server.level 获取世界名称
+        """查找当前世界目录（兼容 Endstone 0.11.x 的目录结构）。"""
+        # 尝试通过 server.level 获取世界名称（在 ServerLoadEvent 后可用）
         try:
             level = self.server.level
             name = level.name
-            for base in [Path("worlds"), Path.cwd() / "worlds"]:
+            # 检查 BDS 子目录和 CWD 下的多个可能路径
+            for base in [
+                Path("bedrock_server") / "worlds",
+                Path.cwd() / "worlds",
+                Path.cwd() / "bedrock_server" / "worlds",
+            ]:
                 world_dir = base / name
                 if (world_dir / "level.dat").exists():
                     return world_dir.resolve()
         except Exception:
             pass
 
-        # 搜索 worlds/ 目录下含 level.dat 的文件夹
-        for worlds_base in [Path("worlds"), Path.cwd() / "worlds"]:
-            if not worlds_base.exists():
+        # 搜索常见 BDS 世界目录
+        for base in [
+            Path("bedrock_server") / "worlds",
+            Path.cwd() / "worlds",
+            Path.cwd() / "bedrock_server" / "worlds",
+        ]:
+            if not base.exists():
                 continue
-            for child in worlds_base.iterdir():
+            for child in base.iterdir():
                 if child.is_dir() and (child / "level.dat").exists():
                     return child.resolve()
         return None

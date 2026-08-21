@@ -5,6 +5,19 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [3.2.2] - 2026-08-21
+
+### 修复
+
+- 行为包脚本兼容 BDS 1.26.40+：`GameTest.register` → `register`（新版 `@minecraft/server-gametest` API）
+- 行为包 manifest 新增 `capabilities: ["script_eval"]`，确保 scriptevent 通信正常
+- `_find_world_dir()` 搜索路径增加 `bedrock_server/worlds/`，兼容 Endstone 0.11.x 目录结构
+
+### 兼容性
+
+- 测试通过 Endstone 0.11.9 / BDS 1.26.44.3
+- 兼容 Endstone 0.11.3 / BDS 1.26.12
+
 ## [3.2.1] - 2026-08-21
 
 ### 新增

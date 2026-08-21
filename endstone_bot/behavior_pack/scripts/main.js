@@ -21,7 +21,7 @@
  *   bot:error         — 错误 {"n":"名字","e":"错误信息"}
  */
 
-import { GameTest, Tags } from "@minecraft/server-gametest";
+import { register, Tags } from "@minecraft/server-gametest";
 import { system, world } from "@minecraft/server";
 
 // 活跃的 GameTest 对象（用于 spawnSimulatedPlayer）
@@ -52,7 +52,7 @@ function reply(eventId, data) {
 /**
  * 注册 GameTest（永久运行，提供 Test 对象用于 spawnSimulatedPlayer）。
  */
-GameTest.register("endstone_bot", "sim_spawner", (test) => {
+register("endstone_bot", "sim_spawner", (test) => {
     activeTest = test;
 
     // 处理排队的生成请求
@@ -144,9 +144,11 @@ function doTeleportSimulatedPlayer(req) {
  */
 system.afterEvents.scriptEventReceive.subscribe((event) => {
     // 只处理 bot 命名空间
-    if (!event.id.startsWith("bot:")) return;
+    if (!event.id.startsWith("bot:")) {
+        return;
+    }
 
-    const action = event.id;
+    console.log(`[EndstoneBot] 收到 scriptevent: ${event.id} 源=${event.sourceType}`);
     let data = {};
     try {
         if (event.message && event.message.length > 0) {

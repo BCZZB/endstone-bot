@@ -17,6 +17,9 @@
       "version": [3, 0, 0]
     }
   ],
+  "capabilities": [
+    "script_eval"
+  ],
   "dependencies": [
     {
       "module_name": "@minecraft/server",
