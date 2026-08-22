@@ -29,10 +29,10 @@
 
 from __future__ import annotations
 
-from endstone_bot.bot_plugin import BotPlugin
+from endstone_bot.plugin import BotPlugin
 
 __all__ = ["BotPlugin"]
-__version__ = "3.2.3"
+__version__ = "3.3.0"
 
 REFERENCES = {
     "mcbes_manage_script": {
